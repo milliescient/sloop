@@ -409,11 +409,19 @@ def build(site=None, drafts=True):
         src, shown, vals = computation(Path(e["path"]).parent)
         e["script"], e["shown"] = src, shown
         for field in ("body",):
-            for key in set(re.findall(r"\{\{\s*([A-Za-z0-9_.]+)\s*\}\}", e[field])):
+            # keys come from a script's own naming, so `1e+08` has to be referenceable, and
+            # a value can be a whole SVG, so neither key nor value may reach a regex raw
+            for key in set(re.findall(r"\{\{\s*([A-Za-z0-9_.+-]+)\s*\}\}", e[field])):
                 if key not in vals:
                     raise SystemExit(f"{Path(e['path']).parent.name}: no value for {{{{{key}}}}}. "
-                                     f"Run notebook assets, or check the page emits it.")
-                e[field] = re.sub(r"\{\{\s*" + key + r"\s*\}\}", vals[key], e[field])
+                                     f"Run sloop assets, or check the page emits it.")
+                e[field] = re.sub(r"\{\{\s*" + re.escape(key) + r"\s*\}\}",
+                                  lambda _, v=vals[key]: v, e[field])
+            # anything still in braces would otherwise ship as literal text on the page
+            stray = re.search(r"\{\{.{0,40}?\}\}", e[field])
+            if stray:
+                raise SystemExit(f"{Path(e['path']).parent.name}: {stray.group(0)} is not a "
+                                 f"usable key. Letters, digits, and _ . + - only.")
     recent = sorted(entries, key=lambda e: (e["stamp"], e["num"]), reverse=True)
     counts = Counter(t for e in entries for t in e["tags"])
     rows = read_sources()
