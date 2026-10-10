@@ -3,15 +3,17 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "labnotebook"
+# PyPI's `sloop` is a package abandoned in 2015, so publishing would need a
+# distribution name like sloop-notebook. The command and the import stay sloop.
+name = "sloop"
 version = "0.1.0"
-description = "Build a lab notebook whose numbers come from the scripts that produced them"
+description = "A lab notebook whose numbers come from the scripts that produced them"
 requires-python = ">=3.9"
 dependencies = ["PyYAML", "markdown"]
 
 [project.scripts]
-labnotebook = "labnotebook.cli:main"
-notebook = "labnotebook.cli:main"      # the short alias; drop it if something else owns it
+sloop = "sloop.cli:main"
+notebook = "sloop.cli:main"            # the alias, so muscle memory keeps working
 
 [tool.setuptools.packages.find]
 where = ["src"]

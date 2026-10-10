@@ -1,4 +1,4 @@
-# labnotebook
+# sloop
 
 A lab notebook as one self-contained HTML page: dated entries of prose whose numbers come
 from the scripts that produced them, each entry pinned to the commit of the repository it
@@ -6,22 +6,31 @@ rests on.
 
 A `{{key}}` anywhere in a page is replaced by a value the page's own script printed, so a
 number in the prose cannot drift from the computation behind it. Rerun the build and the
-prose follows.
+prose follows. Declared assets that are missing, refs at the wrong commit and artifacts
+whose digests have changed all stop the build, because a page that cannot be reproduced
+should not render.
+
+> *slop* is an anagram of *PLoS*, the Public Library of Slop. We generate slop data, run
+> slop analyses and present slop results, and then draw real conclusions, which is only
+> honest if the slop can be reproduced exactly. Hence the rig: a sloop is the smallest one
+> that will still beat upwind, and one person can sail it. A ship carrying a sloop carries
+> a slop chest too.
 
 ## Install
 
-    pip install -e /path/to/labnotebook
+    pip install -e /path/to/sloop
 
-That puts `labnotebook` on the path, with `notebook` as a short alias.
+That puts `sloop` on the path, with `notebook` as an alias.
 
 ## Use
 
-    notebook init my-notebook      # notebook.yml and pages/
-    notebook new "A title"         # the next page, numbered and dated
-    notebook build                 # render it into site/index.html
-    notebook serve                 # build, serve on localhost, rebuild as pages change
-    notebook assets [NN]           # run a page's script and cache what it printed
-    notebook artifacts NN          # run the long analysis behind those assets
+    sloop init my-notebook         # notebook.yml and pages/
+    sloop new "A title"            # the next page, numbered and dated
+    sloop build                    # render it into site/index.html
+    sloop serve                    # build, serve on localhost, rebuild as pages change
+    sloop assets [NN]              # run a page's script and cache what it printed
+    sloop artifacts NN             # run the long analysis behind those assets
+    sloop pack sloop.pyz           # pack the builder into one file for deployment
 
 The notebook is the directory holding `notebook.yml`: pass `--dir`, set `$NOTEBOOK_DIR`, or
 run from anywhere at or below it, so the commands work from inside a page.
@@ -41,6 +50,19 @@ run from anywhere at or below it, so the commands work from inside a page.
 
 Only `title` is needed. Everything above is the default.
 
+## Deploying
+
+`sloop pack` writes a zipapp carrying its own markdown and yaml, about 180 KB, which runs
+on any python3 with nothing installed and nothing to resolve:
+
+    sloop pack sloop.pyz
+    python3 sloop.pyz build --no-drafts --out _site
+
+Commit that file beside the pages and a GitHub Actions job is one line with no setup step,
+since every runner image already ships python3. The same file works on Netlify, Cloudflare
+Pages, a container or a cluster node. The compiled YAML accelerator is dropped when packing,
+so the archive is platform independent and the pure-Python parser is used instead.
+
 ## A page
 
 A page is a directory under `pages/`, numbered so entries can cite each other, holding a
@@ -48,7 +70,7 @@ A page is a directory under `pages/`, numbered so entries can cite each other, h
 
     title: The col=3 move was starving the column that mixes worst
     date: 2026-10-10
-    draft: true                    # keeps it local: `notebook build --no-drafts` holds it back
+    draft: true                    # keeps it local: `sloop build --no-drafts` holds it back
     tags: mcmc, moves
     refs:                          # checkouts the page rests on, verified before anything runs
       - url: https://github.com/you/sim
@@ -62,8 +84,8 @@ A page is a directory under `pages/`, numbered so entries can cite each other, h
     ---
     Body, in Markdown. Raw HTML passes through.
 
-`notebook artifacts NN` runs the long step, which may take hours and refuses to overwrite
-output that already exists. `notebook assets NN` reduces it to a few numbers and caches them
+`sloop artifacts NN` runs the long step, which may take hours and refuses to overwrite
+output that already exists. `sloop assets NN` reduces it to a few numbers and caches them
 in `data.out`, which is committed with the page. A build reads the assets only, so a clone
 renders the whole notebook with no checkout and no analysis at all.
 

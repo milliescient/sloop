@@ -56,7 +56,7 @@ def digest(text):
 def build(out, flags):
     """Out of process on purpose: a build that dies takes nothing in the server with it,
     and the served copy is only replaced once a build has succeeded."""
-    r = subprocess.run([sys.executable, "-m", "labnotebook", "build", "--dir", str(ROOT),
+    r = subprocess.run([sys.executable, "-m", "sloop", "build", "--dir", str(ROOT),
                         *flags, "--out", str(out)],
                        capture_output=True, text=True, cwd=ROOT)
     return r.returncode == 0, (r.stderr + r.stdout).strip()
