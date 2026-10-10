@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "labnotebook"
+version = "0.1.0"
+description = "Build a lab notebook whose numbers come from the scripts that produced them"
+requires-python = ">=3.9"
+dependencies = ["PyYAML", "markdown"]
+
+[project.scripts]
+labnotebook = "labnotebook.cli:main"
+notebook = "labnotebook.cli:main"      # the short alias; drop it if something else owns it
+
+[tool.setuptools.packages.find]
+where = ["src"]
