@@ -12,13 +12,13 @@ HTML, so a table that needs per-cell classes stays HTML inside a .md entry.
 The header is YAML, terminated by `---`. Required: title, date, tags.
 
     refs:                          # checkouts the page rests on, verified before anything runs
-      - url: https://github.com/milliescient/simfbd
+      - url: https://github.com/you/sim
         commit: 2523662d3
-        checkout: simfbd      # path under $CHECKOUTS; defaults to the url's last part
+        checkout: sim         # path under $CHECKOUTS; defaults to the url's last part
     artifacts:                     # analysis output, living where it was made
       make: bash make-artifacts.sh # hours; refuses if the paths are already there
       paths:                       # named <ref>/<path>, so nothing here is absolute
-        - simfbd/sims/rho0n10/specimens_complete
+        - sim/sims/rho0n10/specimens
     assets:                        # tracked, and all the notebook build reads
       make: bash make-assets.sh    # minutes; hashes the artifacts it read
       paths:

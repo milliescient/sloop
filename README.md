@@ -37,7 +37,7 @@ run from anywhere at or below it, so the commands work from inside a page.
 
 ## notebook.yml
 
-    title: fossilizedbirthdeathology
+    title: my-notebook
     repo: https://github.com/you/the-notebook   # per-page source links; omit for none
     branch: main
     pages: pages            # where the page directories live
