@@ -4,9 +4,9 @@ Every path comes from the notebook being built, not from where the builder is in
 
     sloop build                 # render the notebook into its out directory
     sloop serve                 # build, serve, and rebuild as pages change
-    sloop assets [NN]           # build a page's assets from its artifacts
+    sloop assets [NAME]         # build a page's assets from its artifacts
     sloop artifacts NN          # build its artifacts. Hours. Refuses if they exist.
-    sloop new "A title"         # scaffold the next page
+    sloop new NAME ["A title"]  # scaffold a page
     sloop init [DIR]            # start a notebook here
     sloop pack OUT.pyz          # pack the builder into one file for deployment
 
@@ -109,7 +109,7 @@ def main(argv=None):
     s.add_argument("--no-watch", action="store_true", help="do not rebuild on change")
 
     g = sub.add_parser("assets", parents=[common], help="build a page's assets")
-    g.add_argument("page", nargs="?", help="page number, or all pages that make assets")
+    g.add_argument("page", nargs="?", help="page name or prefix; omit for every page that makes assets")
     g.add_argument("--check", action="store_true", help="rebuild and compare, do not overwrite")
     g.add_argument("--force", action="store_true")
 
@@ -118,8 +118,9 @@ def main(argv=None):
     g.add_argument("--force", action="store_true", help="remake artifacts that already exist")
     g.add_argument("--accept-artifacts", action="store_true")
 
-    n = sub.add_parser("new", parents=[common], help="scaffold the next page")
-    n.add_argument("title", nargs="+")
+    n = sub.add_parser("new", parents=[common], help="scaffold a page")
+    n.add_argument("name", help="the page directory, e.g. starving-column")
+    n.add_argument("title", nargs="*", help="the title; defaults to the name")
 
     i = sub.add_parser("init", help="start a notebook in a directory")
     i.add_argument("where", nargs="?")
@@ -151,7 +152,7 @@ def main(argv=None):
         builder.run_pages(rest, generate=a.cmd == "artifacts")
         return
     if a.cmd == "new":
-        scaffold.new(conf["pages"], a.title)
+        scaffold.new(conf["pages"], a.name, a.title)
         return
 
     site = Path(a.out).expanduser().resolve() if a.out else conf["out"]

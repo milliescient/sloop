@@ -31,8 +31,10 @@ The url is tracked rather than derived from a remote: a checkout can have severa
 one that matters may not be `origin`. paleobuddy here is checked out from upstream while the
 commit lives on a fork.
 
-Entry numbers come from the filename prefix and are stable, because entries cite each
-other by number. Display order is by date, newest first.
+A page directory's name is its shortname, and that is its identity: it is the slug in a URL
+and the selector `sloop assets` matches on. It carries no number and no title, so renaming a
+page is free and retitling one changes nothing on disk. Display order is by date, newest
+first, and the date derivation follows renames.
 
 A page is a directory holding its `page.md`, the assets the render reads, and whatever its
 `assets.make` and `artifacts.make` need beside them. Everything an `assets.make` prints after a line reading
@@ -96,24 +98,59 @@ def stamp_text(iso):
 
 
 def last_activity():
-    """When each page directory was last committed to.
+    """When each page directory's contents last changed.
 
     A page is a directory, so git already tracks one history per page. One walk of the log
     is cheaper than a call per page, and a page with no commit yet simply has none.
+
+    The walk follows renames, because a page's directory name is not its identity: renaming
+    one must not reset its date. An exact rename moved no content, so it is not activity, and
+    commits under the old name are credited to the name the page carries now.
+
+    The timestamp marker is @ rather than a letter, since --name-status writes a copy as
+    C100<TAB>old<TAB>new and any status letter would be read as a date.
     """
     try:
-        out = subprocess.run(["git", "log", "--format=C%cI", "--name-only", "--", PAGES.name],
+        out = subprocess.run(["git", "log", "--format=@%cI", "--name-status", "-M",
+                              "--", PAGES.name],
                              cwd=ROOT, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return {}
     if out.returncode != 0:
         return {}
-    seen, when = {}, None
+
+    def page_of(path):
+        parts = path.split("/", 2)
+        return parts[1] if len(parts) > 1 and parts[0] == PAGES.name and parts[1] else None
+
+    seen, renamed_to, when = {}, {}, None
+
+    def now_called(name):
+        # the log is newest first, so a rename is read before the commits under the old name
+        chain = set()
+        while name in renamed_to and name not in chain:
+            chain.add(name)
+            name = renamed_to[name]
+        return name
+
     for line in out.stdout.splitlines():
-        if line.startswith("C"):
+        if line.startswith("@"):
             when = line[1:]
-        elif line.startswith("pages/") and when:
-            seen.setdefault(line.split("/")[1], when)     # log is newest first
+            continue
+        if not when or "\t" not in line:
+            continue
+        fields = line.split("\t")
+        if fields[0].startswith("R") and len(fields) == 3:
+            old_name, new_name = page_of(fields[1]), page_of(fields[2])
+            if old_name and new_name and old_name != new_name:
+                renamed_to[old_name] = now_called(new_name)
+            if fields[0] == "R100":
+                continue                                  # a pure rename is not an update
+            page = new_name
+        else:
+            page = page_of(fields[-1])
+        if page:
+            seen.setdefault(now_called(page), when)
     return seen
 
 
@@ -181,7 +218,6 @@ def parse(path):
     meta["body"] = to_html(body.strip(), path.suffix)
     meta["draft"] = bool(meta.get("draft", False))
     meta["slug"] = path.parent.name
-    meta["num"] = path.parent.name.split("-")[0]
     meta["path"] = str(path)
     if not meta["tags"]:
         raise SystemExit(f"{path.parent.name}: needs at least one tag")
@@ -422,7 +458,7 @@ def build(site=None, drafts=True):
             if stray:
                 raise SystemExit(f"{Path(e['path']).parent.name}: {stray.group(0)} is not a "
                                  f"usable key. Letters, digits, and _ . + - only.")
-    recent = sorted(entries, key=lambda e: (e["stamp"], e["num"]), reverse=True)
+    recent = sorted(entries, key=lambda e: (e["stamp"], e["slug"]), reverse=True)
     counts = Counter(t for e in entries for t in e["tags"])
     rows = read_sources()
     urls = {r[0]: r[2] for r in rows}
@@ -495,7 +531,7 @@ def build(site=None, drafts=True):
         print(f"  draft, not published: {p.parent.name}")
     print(f"{len(entries)} pages, {len(counts)} tags, "
           f"{len(sidebar_sources(rows))} sources listed of {len(rows)}")
-    print(f"  newest: {recent[0]['num']} {recent[0]['title'][:52]} ({recent[0]['date']})")
+    print(f"  newest: {recent[0]['slug']} ({recent[0]['date']}) {recent[0]['title'][:52]}")
 
 
 def emit(page, site=None):
