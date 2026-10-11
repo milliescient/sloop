@@ -114,6 +114,10 @@ def last_activity():
 
     The timestamp marker is @ rather than a letter, since --name-status writes a copy as
     C100<TAB>old<TAB>new and any status letter would be read as a date.
+
+    Only pages that exist now are returned. The log also holds pages since deleted, and loose
+    files from before a page was a directory, and a key that no page can ever be looked up by
+    is noise in anything that prints the result.
     """
     try:
         out = subprocess.run(["git", "log", "--format=@%cI", "--name-status", "-M",
@@ -130,6 +134,13 @@ def last_activity():
 
     def is_page_file(path):
         return path.rsplit("/", 1)[-1] in ("page.md", "page.html")
+
+    # a page is a directory holding a page file, which is also what the render walks
+    try:
+        live = {d.name for d in PAGES.iterdir()
+                if d.is_dir() and any((d / f).exists() for f in ("page.md", "page.html"))}
+    except OSError:
+        return {}
 
     seen, renamed_to, when = {}, {}, None
 
@@ -160,7 +171,7 @@ def last_activity():
             page = page_of(fields[-1])
         if page:
             seen.setdefault(now_called(page), when)
-    return seen
+    return {name: when for name, when in seen.items() if name in live}
 
 
 def commit_link(url, rev):
