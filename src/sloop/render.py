@@ -6,6 +6,7 @@
     @fig:ranks, [@fig:a; @tbl:b]      a numbered reference to a labelled figure, table, equation
     [@Magee_2020], @Magee_2020        a citation from the notebook's .bib file
     ==+2.69==                         a highlight
+    [0.555]{.hi}                      a span with a class, for a cell that wants its own style
     {{key}}                           a value from a values file
 
 Nothing here runs at view time: the page stays one file with no script behind its content.
@@ -186,6 +187,12 @@ class Bibliography:
 
 # ---- a page ----
 
+def marks(text):
+    """==text== is a highlight, and [text]{.name} a span with that class, as Pandoc has them."""
+    text = re.sub(r"==(?=\S)(.+?)(?<=\S)==", r"<mark>\1</mark>", text)
+    return re.sub(r"\[([^\[\]]+)\]\{\.([A-Za-z][\w-]*)\}", r'<span class="\2">\1</span>', text)
+
+
 class Page:
     """One page's Markdown, taken to HTML."""
 
@@ -222,7 +229,7 @@ class Page:
     def inline(self, text):
         """A caption or a cell: math, highlights and Markdown, on one line."""
         text = self.math(text, blocks=False)
-        text = re.sub(r"==(?=\S)(.+?)(?<=\S)==", r"<mark>\1</mark>", text)
+        text = marks(text)
         return self.restore(inline(text))
 
     # math: $$...$$ {#eq:x} first, then $...$ under Pandoc's rule, which leaves $5 and $10 alone
@@ -392,7 +399,7 @@ class Page:
         body = "\n".join(lines)
         body = self.math(body)
         body = self.refer(body)
-        body = re.sub(r"==(?=\S)(.+?)(?<=\S)==", r"<mark>\1</mark>", body)
+        body = marks(body)
         body = re.sub(r"SLOOPCODE(\d{5})X", lambda m: code[int(m.group(1))], body)
         out = markdown_lib().markdown(body, extensions=["tables", "attr_list", "fenced_code", "md_in_html"])
         out = self.restore(out)

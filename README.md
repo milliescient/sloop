@@ -204,12 +204,13 @@ reruns the summary against the logs that exist, as often as you like.
 |---|---|
 | `{{key}}` | a value from `values.tsv`, or any `*.values.tsv` a step wrote: one `key<TAB>value` a line |
 | `$x^2$`, `$$ ... $$` | math, converted to MathML at build time |
-| `![A caption](ranks.csv)` on a line by itself | a table: the first row is the header, a cell is inline Markdown |
+| `![A caption](ranks.csv)` on a line by itself | a table: the first row is the header, a cell is inline Markdown, and the caption may be empty |
 | `![A caption](plot.svg)` | a figure, inlined; `.png` and `.jpg` are embedded, `.md` is included, `.txt` is shown as it is |
 | `{#fig:name}`, `{#tbl:name}`, `{#eq:name}` after one of those | a label, which numbers it |
 | `@fig:name`, `[@fig:a; @tbl:b]` | "Figure 2", linked |
 | `[@Key]`, `@Key` | a citation from the `.bib` file, and a reference list at the foot of the page |
 | `==text==` | a highlight |
+| `[text]{.name}` | a span with that class, for a table cell that wants its own style; `hi` and `lo` are defined |
 
 A `{{key}}` with no value, an embedded file that is missing, a reference to a label that is
 not there, a citation that is not in the `.bib` file and math the converter does not know

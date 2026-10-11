@@ -518,8 +518,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     font-size:.86rem; color:var(--muted); margin-top:var(--s1); line-height:1.45; }
   figure.fig img { display:block; max-width:100%; height:auto; }
   figure.tbl { margin:0; } figure.tbl figcaption { margin:0 0 var(--s1); }
-  figure.tbl th, figure.tbl td { text-align:left; }
-  figure.tbl th.num, figure.tbl td.num { text-align:right; }
+  span.hi { color:var(--accent); font-weight:600; } span.lo { color:var(--oxide); }
   figure.tbl.compact th, figure.tbl.compact td { padding:.2em .6em; }
   .capnum { color:var(--ink); font-weight:600; }
   mark { background:var(--sel); color:inherit; padding:0 .15em; border-radius:2px; }
