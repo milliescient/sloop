@@ -107,6 +107,11 @@ def last_activity():
     one must not reset its date. An exact rename moved no content, so it is not activity, and
     commits under the old name are credited to the name the page carries now.
 
+    A directory rename is read off the PAGE FILE alone. Rename detection pairs files by
+    content, and the per-page scaffold files are byte-identical across pages, so git will
+    happily pair one page's .env.default with another's and the alias comes out crossed. A
+    page file is unique to its page, so pairing it cannot cross.
+
     The timestamp marker is @ rather than a letter, since --name-status writes a copy as
     C100<TAB>old<TAB>new and any status letter would be read as a date.
     """
@@ -122,6 +127,9 @@ def last_activity():
     def page_of(path):
         parts = path.split("/", 2)
         return parts[1] if len(parts) > 1 and parts[0] == PAGES.name and parts[1] else None
+
+    def is_page_file(path):
+        return path.rsplit("/", 1)[-1] in ("page.md", "page.html")
 
     seen, renamed_to, when = {}, {}, None
 
@@ -142,7 +150,8 @@ def last_activity():
         fields = line.split("\t")
         if fields[0].startswith("R") and len(fields) == 3:
             old_name, new_name = page_of(fields[1]), page_of(fields[2])
-            if old_name and new_name and old_name != new_name:
+            if (old_name and new_name and old_name != new_name
+                    and is_page_file(fields[1]) and is_page_file(fields[2])):
                 renamed_to[old_name] = now_called(new_name)
             if fields[0] == "R100":
                 continue                                  # a pure rename is not an update
