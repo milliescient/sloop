@@ -209,9 +209,13 @@ def provenance(page_dir):
             if u not in seen:
                 seen.append(u)
                 pins += use(u)
+        # what a manifest beside a path says made it: shown and linked, never checked
+        with_ = lambda p: "".join(
+            f'<div class="made">made with {"".join(use(u) for u in us)}</div>'
+            for us in [(rec.get("made_with") or {}).get(p)] if us)
         paths = lambda side: "".join(
             f'<div><code>{html.escape(p)}</code> <span class="hash">{html.escape(str(h))}</span></div>'
-            for p, h in (rec.get(side) or {}).items())
+            + with_(p) for p, h in (rec.get(side) or {}).items())
         rows += (f'<tr><td>{html.escape(name)}{" <em>frozen</em>" if plan.steps[name]["frozen"] else ""}'
                  f'{"" if rec else " <em>no record</em>"}</td>'
                  f'<td>{"".join(use(u) for u in rec.get("uses") or [])}</td>'
@@ -536,6 +540,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     white-space:normal; vertical-align:top; }
   details.prov .hash { color:var(--muted); } details.prov li.bad { color:var(--oxide); }
   details.prov ul { padding-left:1.2em; }
+  details.prov .made { padding-left:1.2em; font-size:.76rem; } details.prov .made .ref { margin-left:.4em; }
   .fig svg { color:var(--ink); }
   .fig .grid { stroke:var(--rule); } .fig .base { stroke:var(--muted); stroke-opacity:.5; }
   .fig .band { fill:currentColor; fill-opacity:.07; }

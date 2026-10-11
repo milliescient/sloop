@@ -160,8 +160,15 @@ its header. That is shown and never enforced.
 ### The record
 
 `sloop make` writes `page.lock` beside the page: for each step, the versions it ran and the
-hash of every path it read and wrote. It is committed, and it is what a review reads. A
-step is then one of
+hash of every path it read and wrote. It is committed, and it is what a review reads.
+
+A tool that makes data may pick its own tools, as simfbd picks the build of rb that fits a
+run. Where a path a step reads or writes has a `manifest.yml` at or above it with a `uses`
+list of `name@version`, the lock copies the list under `made_with`, and the provenance block
+shows it under that path, each name linked through its entry in `dependencies`. It says what
+ran there and is never compared with what is installed here.
+
+A step is then one of
 
 | State | Meaning |
 |---|---|

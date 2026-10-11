@@ -25,7 +25,9 @@ script, every word of `cmd` naming a file in the page directory, is an input wit
 listed.
 
 `page.lock` beside the page records, per step, the versions it ran, and the hash of every
-path it read and wrote. It is written by sloop and read by a person in a diff. A step is
+path it read and wrote. Where such a path has a manifest.yml at or above it that states its
+own `uses`, the lock copies that under `made_with`, so the page can show what a tool ran on
+the step's behalf. It is written by sloop and read by a person in a diff. A step is
 
     missing      an output is not there
     moved        an output differs from what the step recorded writing
@@ -309,7 +311,7 @@ def write_lock(plan, lock):
     for name in plan.order:
         rec = lock["steps"].get(name)
         if rec:
-            doc["steps"][name] = {k: rec[k] for k in ("uses", "inputs", "outputs") if rec.get(k)}
+            doc["steps"][name] = {k: rec[k] for k in ("uses", "inputs", "outputs", "made_with") if rec.get(k)}
     if lock["checks"]:
         doc["checks"] = {n: lock["checks"][n] for n in plan.checks if n in lock["checks"]}
     if lock["provisional"]:
@@ -577,8 +579,54 @@ def run_step(plan, lock, name, force=False, check=False):
 
 
 def record(plan, step, uses, fresh=True):
-    return {"uses": list(uses), "inputs": observe(plan, step["inputs"], fresh),
-            "outputs": observe(plan, step["outputs"], fresh)}
+    rec = {"uses": list(uses), "inputs": observe(plan, step["inputs"], fresh),
+           "outputs": observe(plan, step["outputs"], fresh)}
+    with_ = made_with(plan, step)
+    if with_:
+        rec["made_with"] = with_
+    return rec
+
+
+MANIFEST = "manifest.yml"
+
+
+def manifest_uses(at, root):
+    """What the nearest manifest.yml at or above a path says made it, as name@version, or [].
+
+    A tool that makes data can pick its own tools: simfbd fits a run with the build of rb the
+    run's config states, which need not be the one a page's own scripts would find. Its
+    manifest says which it was, in the form a step's `uses` has, so a page can show it. A
+    manifest with entries, each with its own `uses`, gives all of them.
+    """
+    d = at if at.is_dir() else at.parent
+    while True:
+        f = d / MANIFEST
+        if f.is_file():
+            try:
+                doc = yaml.safe_load(f.read_text())
+            except (OSError, yaml.YAMLError):
+                return []
+            doc = doc if isinstance(doc, dict) else {}
+            found = doc.get("uses") or [u for e in doc.get("simulated") or [] if isinstance(e, dict)
+                                        for u in e.get("uses") or []]
+            found = [found] if isinstance(found, str) else found
+            return list(dict.fromkeys(str(u) for u in found if re.fullmatch(r"[^@\s]+@\S+", str(u))))
+        if d == root or d == d.parent:
+            return []
+        d = d.parent
+
+
+def made_with(plan, step):
+    """{path: [name@version]} for the paths a step reads and writes that a manifest covers.
+    It is shown on the page and never checked: it is what ran there, not what is installed."""
+    out = {}
+    for p in dict.fromkeys(step["inputs"] + step["outputs"]):
+        at, dep = plan.where(p)
+        if at.exists():
+            found = manifest_uses(at, D.locate(dep, plan.deps[dep])[0] if dep else plan.dir)
+            if found:
+                out[p] = found
+    return out
 
 
 def run_checks(plan, lock):
@@ -630,6 +678,13 @@ def make(page_dir, only=None, force=False, check=False):
                     ok = run_step(plan, lock, name, check=True) and ok
                 continue
             if state == "current":
+                # nothing to run, and the record still describes what is on disk, so what a
+                # manifest there says made it can be read now
+                with_ = made_with(plan, step)
+                if with_:
+                    lock["steps"][name]["made_with"] = with_
+                else:
+                    lock["steps"][name].pop("made_with", None)
                 continue
             if state == "not here":
                 print(f"{plan.name} {name}: {why[0]}, so it is not checkable here")
