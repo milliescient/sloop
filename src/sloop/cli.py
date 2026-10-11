@@ -112,11 +112,12 @@ def main(argv=None):
     g.add_argument("page", nargs="?", help="page name or prefix; omit for every page that makes assets")
     g.add_argument("--check", action="store_true", help="rebuild and compare, do not overwrite")
     g.add_argument("--force", action="store_true")
+    g.add_argument("--accept-artifacts", action="store_true",
+                   help="build although an artifact has changed since data.out was written")
 
     g = sub.add_parser("artifacts", parents=[common], help="build a page's artifacts")
     g.add_argument("page", nargs="?")
     g.add_argument("--force", action="store_true", help="remake artifacts that already exist")
-    g.add_argument("--accept-artifacts", action="store_true")
 
     n = sub.add_parser("new", parents=[common], help="scaffold a page")
     n.add_argument("name", help="the page directory, e.g. starving-column")
