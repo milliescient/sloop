@@ -16,9 +16,15 @@ DEFAULTS = {
     "branch": "main",   # the branch the repo links point at
     "pages": "pages",
     "out": "site",
-    "sources": "sources.tsv",
-    # checkouts a page pins by commit; alongside the notebook by default, as before
+    # the sidebar's reading list: rows of name, kind, url, note
+    "sources": [],
+    # what a page can depend on; deps.py has the fields
+    "dependencies": {},
+    # where a repository or a data directory is looked for when it gives no path of its own
     "checkouts": "..",
+    "bibliography": "references.bib",
+    # literal colours in a figure and the stylesheet variable each stands for
+    "figure_colors": {},
     "serve": {"port": 8099, "edit": True},
 }
 
@@ -49,10 +55,10 @@ def load(explicit=None):
     raw = yaml.safe_load((root / CONFIG_NAME).read_text()) or {}
     conf = {**DEFAULTS, **raw}
     conf["serve"] = {**DEFAULTS["serve"], **(raw.get("serve") or {})}
-    for key in ("pages", "out", "sources", "checkouts"):
+    for key in ("pages", "out", "checkouts", "bibliography"):
         conf[key] = (root / conf[key]).resolve() if not Path(conf[key]).is_absolute() \
                     else Path(conf[key])
-    # CHECKOUTS in the environment still wins, so existing scripts keep working
+    # CHECKOUTS in the environment moves the default location for one machine
     if os.environ.get("CHECKOUTS"):
         conf["checkouts"] = Path(os.environ["CHECKOUTS"]).expanduser().resolve()
     return root, conf

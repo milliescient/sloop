@@ -9,87 +9,60 @@ Building the notebook reads assets only, so a clone builds with no checkout at a
 Each entry is a file whose header is `key: value` lines terminated by `---`, then a body.
 A .md body is rendered as Markdown, a .html body is passed through. Markdown keeps raw
 HTML, so a table that needs per-cell classes stays HTML inside a .md entry.
-The header is YAML, terminated by `---`. Required: title, date, tags.
-
-    refs:                          # checkouts the page rests on, verified before anything runs
-      - url: https://github.com/you/sim
-        commit: 2523662d3
-        checkout: sim         # path under $CHECKOUTS; defaults to the url's last part
-    artifacts:                     # analysis output, living where it was made
-      make: bash make-artifacts.sh # hours; refuses if the paths are already there
-      paths:                       # named <ref>/<path>, so nothing here is absolute
-        - sim/sims/rho0n10/specimens
-    assets:                        # tracked, and all the notebook build reads
-      make: bash make-assets.sh    # minutes; hashes the artifacts it read
-      paths:
-        - data.out
-
-Artifacts belong to whoever produced them and are far too large to track; assets belong to
-the page and are committed with it, which is why a clone renders without any checkout.
-
-The url is tracked rather than derived from a remote: a checkout can have several, and the
-one that matters may not be `origin`. paleobuddy here is checked out from upstream while the
-commit lives on a fork.
+The header is YAML, terminated by `---`. Required: title, date, tags. A page whose numbers
+come from scripts also declares `steps:` and perhaps `checks:`, which lock.py reads and runs;
+this module only renders, and asks lock.py whether a page's record still holds.
 
 A page directory's name is its shortname, and that is its identity: it is the slug in a URL
 and the selector `sloop assets` matches on. It carries no number and no title, so renaming a
 page is free and retitling one changes nothing on disk. Display order is by date, newest
 first, and the date derivation follows renames.
 
-A page is a directory holding its `page.md`, the assets the render reads, and whatever its
-`assets.make` and `artifacts.make` need beside them. Everything an `assets.make` prints after a line reading
-`## values` is `key<TAB>value` pairs, and `{{key}}` anywhere in the page is replaced by the
-value, so a number cannot drift from the computation behind it: rerun the build and the prose
-follows. A `{{key}}` with no value stops the render, as does a declared asset that is missing.
+A page is a directory holding its `page.md`, whatever its steps need beside them, and the
+outputs they write there, which are committed with it. That is why a clone renders without any
+checkout. A `{{key}}` anywhere in the page is replaced by the value a step wrote for it, so a
+number cannot drift from the computation behind it: rerun the step and the prose follows. A
+`{{key}}` with no value stops the render, as does an embedded file that is missing. render.py
+has what else a page can write.
 
 Routes: #/ everything, #/tag/<tag> filtered, #/entry/<slug>.
 
 Writes one self-contained page to site/index.html, which works at any mount path.
 """
-import hashlib
 import html
-import os
 import re
 import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 from string import Template
 
 import yaml
 
+from . import deps as D
+from . import lock as L
+from . import render as R
+
 # init() fills these in from the notebook's config: the builder is installed once, and
 # every path it touches comes from the directory it was pointed at.
-ROOT = PAGES = SOURCES = SITE = CHECKOUTS = None
+ROOT = PAGES = SITE = BIB = None
+SOURCES, PALETTE = [], {}
 CONF, TITLE, REPO, BRANCH = {}, "notebook", "", "main"
 
 
 def init(root, conf):
-    global ROOT, PAGES, SOURCES, SITE, CHECKOUTS, CONF, TITLE, REPO, BRANCH
+    global ROOT, PAGES, SOURCES, SITE, CONF, TITLE, REPO, BRANCH, BIB, PALETTE
     ROOT, CONF = root, conf
-    PAGES, SOURCES, SITE = conf["pages"], conf["sources"], conf["out"]
-    CHECKOUTS = conf["checkouts"]
+    PAGES, SITE = conf["pages"], conf["out"]
+    SOURCES = conf.get("sources") or []
     TITLE, REPO, BRANCH = conf["title"], conf["repo"], conf["branch"]
+    BIB = R.Bibliography(conf["bibliography"])
+    PALETTE = {R.colour(str(k)): str(v).lstrip("-") for k, v in (conf.get("figure_colors") or {}).items()}
+    D.init(root, conf)
+    L.init(root, conf)
 
 META_KEYS = ("title", "date", "tags")
 MONTHS = [None, "Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-
-def to_html(body, suffix):
-    if suffix != ".md":
-        return body
-    try:
-        import markdown
-    except ModuleNotFoundError:
-        raise SystemExit("a .md entry needs the markdown package; this interpreter "
-                         f"({sys.executable}) does not have it")
-    for line in body.split("\n"):
-        if line.startswith("<math") and 'display="block"' not in line:
-            raise SystemExit("inline <math> may not start a line: markdown treats it as "
-                             f"block level and splits the paragraph.\n  {line[:70]}")
-    return markdown.markdown(body, extensions=["tables", "attr_list", "fenced_code",
-                                               "md_in_html"])
 
 
 def stamp_text(iso):
@@ -174,35 +147,6 @@ def last_activity():
     return {name: when for name, when in seen.items() if name in live}
 
 
-def commit_link(url, rev):
-    """A github URL plus a hex revision is a commit page; anything else is the repo."""
-    if "github.com" in url and re.fullmatch(r"[0-9a-f]{7,40}", rev):
-        return f"{url.rstrip('/')}/commit/{rev}"
-    return url
-
-
-def computation(page_dir):
-    """The companion script, its captured output, and the values the entry interpolates.
-
-    Nothing is executed here. Analyses read hundreds of MCMC logs and take minutes, while a
-    a notebook build takes a tenth of a second, so `notebook assets` runs them and this reads it.
-    """
-    out = page_dir / "data.out"
-    if not out.exists():
-        return None, None, {}
-    src = out
-    shown, vals = "", {}
-    if out.exists():
-        text = out.read_text()
-        head, sep, tail = text.partition("\n## values\n")
-        shown = head.rstrip()
-        for line in tail.splitlines():
-            if "\t" in line:
-                k, v = line.split("\t", 1)
-                vals[k.strip()] = v.strip()
-    return src.read_text(), shown, vals
-
-
 def is_draft(path):
     """Read only the header. A draft must not block a build, so a broken one is left
     for parse() to report rather than raising here."""
@@ -215,41 +159,95 @@ def is_draft(path):
 
 def parse(path):
     head, _, body = path.read_text().partition("\n---\n")
+    name = path.parent.name
     try:
         meta = yaml.safe_load(head) or {}
     except yaml.YAMLError as e:
-        raise SystemExit(f"{path.parent.name}: header is not valid YAML\n  {e}")
+        raise SystemExit(f"{name}: header is not valid YAML\n  {e}")
     missing = [k for k in META_KEYS if k not in meta]
     if missing:
-        raise SystemExit(f"{path.parent.name}: missing {', '.join(missing)}")
+        raise SystemExit(f"{name}: missing {', '.join(missing)}")
     meta["tags"] = [str(x).strip() for x in meta["tags"]] if isinstance(meta["tags"], list) \
         else [t.strip() for t in str(meta["tags"]).split(",") if t.strip()]
     meta["date"] = str(meta["date"])
-    for r in meta.get("refs") or []:
-        r["name"] = r["url"].rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-        r.setdefault("checkout", r["name"])       # where it sits under $CHECKOUTS
-    meta["refs"] = meta.get("refs") or []
-    for key in ("artifacts", "assets"):
-        meta[key] = meta.get(key) or {}
-        meta[key]["paths"] = meta[key].get("paths") or []
-    for a in meta["assets"]["paths"]:
-        if not (path.parent / a).exists():
-            raise SystemExit(f"{path.parent.name}: declares asset {a}, which is not there")
-    meta["body"] = to_html(body.strip(), path.suffix)
+    try:
+        page = R.Page(name, path.parent, R.read_values(path.parent), BIB, PALETTE)
+        # a .html page is passed through, and still has its values filled
+        meta["body"] = page.render(body.strip()) if path.suffix == ".md" else page.fill(body.strip())
+    except R.Failure as e:
+        raise SystemExit(f"{name}: {e}")
     meta["draft"] = bool(meta.get("draft", False))
-    meta["slug"] = path.parent.name
+    meta["slug"] = name
     meta["path"] = str(path)
     if not meta["tags"]:
-        raise SystemExit(f"{path.parent.name}: needs at least one tag")
+        raise SystemExit(f"{name}: needs at least one tag")
     return meta
 
 
+def provenance(page_dir):
+    """(the versions a page's steps ran as links, the block a reader can open).
+
+    Everything here is read from the lock, so it says what was recorded where the work was
+    done, and it is on the page whether or not this machine could check any of it.
+    """
+    plan = L.Plan(page_dir, strict=False)
+    lock = L.read_lock(page_dir)
+
+    def use(u):
+        name, _, ver = u.partition("@")
+        dep = plan.deps.get(name)
+        href = D.link(dep, ver) if dep else ""
+        label = html.escape(u)
+        return (f'<a class="ref" href="{html.escape(href)}" rel="noreferrer">{label}</a>' if href
+                else f'<span class="ref">{label}</span>')
+
+    seen, pins = list(plan.rests_on), "".join(use(u) for u in plan.rests_on)
+    rows = ""
+    for name in plan.order:
+        rec = lock["steps"].get(name) or {}
+        for u in rec.get("uses") or []:
+            if u not in seen:
+                seen.append(u)
+                pins += use(u)
+        paths = lambda side: "".join(
+            f'<div><code>{html.escape(p)}</code> <span class="hash">{html.escape(str(h))}</span></div>'
+            for p, h in (rec.get(side) or {}).items())
+        rows += (f'<tr><td>{html.escape(name)}{" <em>frozen</em>" if plan.steps[name]["frozen"] else ""}'
+                 f'{"" if rec else " <em>no record</em>"}</td>'
+                 f'<td>{"".join(use(u) for u in rec.get("uses") or [])}</td>'
+                 f'<td>{paths("inputs")}</td><td>{paths("outputs")}</td></tr>')
+    block = ('<table><thead><tr><th>step</th><th>ran</th><th>read</th><th>wrote</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table>') if rows else ""
+    if plan.checks:
+        block += '<ul class="checks">'
+        for name, c in plan.checks.items():
+            got = (lock["checks"].get(name) or {}).get("result")
+            ok = got is not None and str(got) == c["expect"]
+            block += (f'<li class="{"ok" if ok else "bad"}">check: {html.escape(name)} '
+                      f'&mdash; expected <code>{html.escape(c["expect"])}</code>, '
+                      f'got <code>{html.escape(str(got))}</code></li>')
+        block += "</ul>"
+    if lock["accepted"]:
+        block += '<ul class="accepted">'
+        for a in lock["accepted"]:
+            what = a.get("path") or a.get("step") or a.get("uses") or ""
+            if a.get("step"):
+                what = f'{a["step"]}: {", ".join(a.get("uses") or [])}'.rstrip(": ")
+            moved = f' ({html.escape(str(a["was"]))} &rarr; {html.escape(str(a["now"]))})' if a.get("was") else ""
+            block += (f'<li>accepted: <code>{html.escape(str(what))}</code>{moved} '
+                      f'&mdash; {html.escape(str(a.get("why", "")))}</li>')
+        block += "</ul>"
+    return pins, f'<details class="prov"><summary>provenance</summary>{block}</details>' if block else ""
+
+
 def read_sources():
-    # optional: a notebook that cites nothing simply has no sources file
-    if not SOURCES.exists():
-        return []
-    rows = [l.split("\t") for l in SOURCES.read_text().strip().splitlines()[1:]]
-    return [r + [""] * (4 - len(r)) for r in rows]
+    """The reading list, as [name, kind, url, note] rows. It lives in notebook.yml."""
+    rows = []
+    for r in SOURCES:
+        if not isinstance(r, dict) or not r.get("name"):
+            raise SystemExit("notebook.yml: each of sources needs a name, and may have kind, url, note")
+        rows.append([str(r.get(k) or "") for k in ("name", "kind", "url", "note")])
+    return rows
 
 
 def sidebar_sources(rows):
@@ -257,193 +255,6 @@ def sidebar_sources(rows):
     to resolve a citation. The namesake sits last however the file is ordered."""
     listed = [r for r in rows if r[2] and r[1] != "ref-only"]
     return sorted(listed, key=lambda r: r[1] == "namesake")
-
-
-CHECKABLE = re.compile(r"^#\|\s*check\b", re.M)
-
-
-def header(page_dir):
-    page = next((p for p in page_dir.glob("page.*")), None)
-    if page is None:
-        return {}
-    meta = yaml.safe_load(page.read_text().partition("\n---\n")[0]) or {}
-    for r in meta.get("refs") or []:
-        r["name"] = r["url"].rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-        r.setdefault("checkout", r["name"])       # where it sits under $CHECKOUTS
-        if "commit" in r:
-            r["commit"] = str(r["commit"])       # an all-digit short hash parses as an int
-    return meta
-
-
-def git(path, *args):
-    r = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
-def digest(path):
-    """A stable hash of a file, or of every file under a directory."""
-    h = hashlib.sha1()
-    base = path if path.is_dir() else path.parent
-    files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
-    for f in files:
-        h.update(str(f.relative_to(base)).encode())
-        with f.open("rb") as fh:
-            for block in iter(lambda: fh.read(1 << 20), b""):
-                h.update(block)
-    return h.hexdigest()[:12]
-
-
-def verify(page_dir, checkouts=True):
-    """Check every ref, and hash what it declares.
-
-    Returns (problems, notes, digests, paths). The paths reach the make script as SIMFBD and
-    the like, resolved, so it never joins $CHECKOUTS to a checkout name itself.
-
-    `checkouts` is what separates the two steps. Generating artifacts runs the checkout's own
-    code, so it needs that checkout at the commit the page names. Building assets only reads
-    artifacts already on disk, so what has to be verified there is the artifacts, not the
-    working tree that happens to be beside them. A commit mismatch is a note in that case.
-    """
-    meta = header(page_dir)
-    bad, notes, digs, paths = [], [], {}, {}
-    where = {}
-    for r in meta.get("refs") or []:
-        co = CHECKOUTS / r["checkout"]
-        where[r["name"]] = co
-        paths[re.sub(r"[^A-Z0-9]", "_", r["name"].upper())] = str(co)
-        if not co.is_dir():
-            notes.append(f'{r["name"]}@{r["commit"]} not checked, no {co}')
-            continue
-        head = git(co, "rev-parse", "HEAD")
-        if head is None:
-            notes.append(f'{r["checkout"]} is not a git checkout')
-            continue
-        if not head.startswith(r["commit"]) and git(co, "rev-parse", r["commit"]) != head:
-            (bad if checkouts else notes).append(f'{r["name"]} is at {head[:len(r["commit"])]}, page wants {r["commit"]}')
-            continue
-        remotes = (git(co, "remote", "-v") or "").replace(":", "/")
-        want = r["url"].rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip("/")
-        if want and want not in remotes:
-            (bad if checkouts else notes).append(f'{r["name"]} has no remote matching {r["url"]}')
-            continue
-        if git(co, "status", "--porcelain"):
-            notes.append(f'{r["name"]} matches but its tree is dirty')
-
-    # artifacts name a ref and a path inside it, so nothing here holds an absolute path
-    for a in (meta.get("artifacts") or {}).get("paths") or []:
-        name, _, rest = a.partition("/")
-        if name not in where:
-            bad.append(f"artifact {a} names {name}, which is not a ref")
-            continue
-        p = where[name] / rest
-        if not p.exists():
-            bad.append(f"artifact {a} is missing")
-        else:
-            digs[a] = digest(p)
-    return bad, notes, digs, paths
-
-
-def run(page_dir, check=False, generate=False, force=False, accept=False):
-    meta = header(page_dir)
-    cmd = (meta.get("artifacts" if generate else "assets") or {}).get("make")
-    # the `#| check` marker lives in whatever script the make command names
-    src = next((page_dir / w for w in (cmd or "").split() if (page_dir / w).is_file()), None)
-    out = page_dir / "data.out"
-    print(f"{page_dir.name} ... ", end="", flush=True)
-
-    if generate:
-        # artifacts that already exist are not remade by accident: another page may rest on
-        # them, and a job may be writing them right now
-        have = [a for a in (header(page_dir).get("artifacts") or {}).get("paths") or []
-                if (CHECKOUTS / next((r["checkout"] for r in header(page_dir).get("refs") or []
-                                      if r["name"] == a.split("/")[0]), "")
-                    / a.partition("/")[2]).exists()]
-        if have and not force:
-            print("refused", flush=True)
-            for a in have:
-                sys.stderr.write(f"  {a} already exists\n")
-            sys.stderr.write("  another page may rest on these, or a job may be writing them.\n"
-                             "  pass --force to remake them anyway\n")
-            return False
-        bad, _, _, paths = verify(page_dir)
-        if bad:
-            print("refused")
-            for line in bad:
-                sys.stderr.write(f"  {line}\n")
-            return False
-        print(f"running `{cmd}`, the long step")
-        env = dict(os.environ, CHECKOUTS=str(CHECKOUTS), PAGE=str(page_dir), **paths)
-        r = subprocess.run(cmd, shell=True, env=env, cwd=page_dir)
-        print("generated" if r.returncode == 0 else "failed")
-        return r.returncode == 0
-
-    if check and not (src and CHECKABLE.search(src.read_text())):
-        print("skipped, no `#| check`")
-        return True
-    if check and not out.exists():
-        print(f"no {out.name} to check against")
-        return False
-
-    # only the artifacts have to be the right ones here: this step reads them, it does not
-    # run the checkout's code, so the working tree beside them is not what is at stake
-    bad, notes, digs, paths = verify(page_dir, checkouts=False)
-    # what IS at stake is that they are the artifacts the last run described. data.out
-    # carries their digests, so a batch regenerated underneath the page is caught here.
-    if out.exists():
-        was = dict(l.split("\t", 1) for l in out.read_text().splitlines()
-                   if l.startswith("artifact.") and "\t" in l)
-        for k, v in sorted(digs.items()):
-            old_v = (was.get("artifact." + k) or "").strip()
-            if old_v and old_v != v:
-                # deliberate is not the same as unnoticed: the change is always named, and
-                # --accept-artifacts is how someone says they meant it
-                line = f"{k} has changed since these numbers were written ({old_v} -> {v})"
-                if accept:
-                    notes.append(line + ", accepted")
-                else:
-                    bad.append(line)
-    if bad:
-        print("refused")
-        for line in bad:
-            sys.stderr.write(f"  {line}\n")
-        sys.stderr.write("  the numbers would not be the ones this page rests on\n")
-        return False
-
-    env = dict(os.environ, CHECKOUTS=str(CHECKOUTS), PAGE=str(page_dir), **paths)
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                       env=env, cwd=page_dir)
-    if r.returncode != 0:
-        print("failed")
-        sys.stderr.write(r.stderr[-2000:])
-        return False
-
-    # the artifacts a page read are recorded with its numbers, not asserted beside them
-    text = r.stdout
-    if digs:
-        head, sep, tail = text.partition("\n## values\n")
-        if not sep:
-            head, sep, tail = text.rstrip("\n"), "\n## values\n", ""
-        text = head + sep + tail + "".join(f"artifact.{k}\t{v}\n" for k, v in sorted(digs.items()))
-
-    def trailing():
-        for n in notes:
-            print(f"    note: {n}")
-
-    if check:
-        if out.read_text() != text:
-            print("DIFFERS")
-            trailing()
-            return False
-        print("matches")
-        trailing()
-        return True
-
-    out.write_text(text)
-    n = sum(1 for l in text.partition("\n## values\n")[2].splitlines() if "\t" in l)
-    print(f"{len(text.splitlines())} lines, {n} values -> {out.name}")
-    trailing()
-    return True
-
 
 
 def build(site=None, drafts=True):
@@ -456,32 +267,26 @@ def build(site=None, drafts=True):
         held_note = f", {len(held)} held as drafts" if held else ""
         raise SystemExit(f"nothing to build: no publishable pages{held_note}")
     activity = last_activity()
+    unsettled = {}
     for e in entries:
         # the timestamp orders, the date displays: two pages committed the same day
         # still sort in the order they were touched
         e["stamp"] = activity.get(e["slug"], e["date"])
         e["updated"] = stamp_text(e["stamp"])
-    for e in entries:
-        src, shown, vals = computation(Path(e["path"]).parent)
-        e["script"], e["shown"] = src, shown
-        for field in ("body",):
-            # keys come from a script's own naming, so `1e+08` has to be referenceable, and
-            # a value can be a whole SVG, so neither key nor value may reach a regex raw
-            for key in set(re.findall(r"\{\{\s*([A-Za-z0-9_.+-]+)\s*\}\}", e[field])):
-                if key not in vals:
-                    raise SystemExit(f"{Path(e['path']).parent.name}: no value for {{{{{key}}}}}. "
-                                     f"Run sloop assets, or check the page emits it.")
-                e[field] = re.sub(r"\{\{\s*" + re.escape(key) + r"\s*\}\}",
-                                  lambda _, v=vals[key]: v, e[field])
-            # anything still in braces would otherwise ship as literal text on the page
-            stray = re.search(r"\{\{.{0,40}?\}\}", e[field])
-            if stray:
-                raise SystemExit(f"{Path(e['path']).parent.name}: {stray.group(0)} is not a "
-                                 f"usable key. Letters, digits, and _ . + - only.")
+        page_dir = Path(e["path"]).parent
+        e["why"] = L.gate(page_dir)
+        e["pins"], e["prov"] = provenance(page_dir)
+        if e["why"]:
+            unsettled[e["slug"]] = e["why"]
+    # A page whose record does not hold is shown as such while it is being worked on, and is
+    # never published: that build fails, rather than quietly including or leaving out the page.
+    if unsettled and not drafts:
+        lines = "".join(f"\n  {slug}: {w}" for slug, why in unsettled.items() for w in why)
+        raise SystemExit("not published. These pages are provisional, and none is marked "
+                         f"draft:{lines}")
     recent = sorted(entries, key=lambda e: (e["stamp"], e["slug"]), reverse=True)
     counts = Counter(t for e in entries for t in e["tags"])
     rows = read_sources()
-    urls = {r[0]: r[2] for r in rows}
 
     months = Counter(e["date"][:7] for e in entries)
     dates = "".join(
@@ -508,34 +313,35 @@ def build(site=None, drafts=True):
             f'{html.escape(t)}</button>' for t in e["tags"])
         hist = (f'<a class="ref" href="{REPO}/tree/{BRANCH}/{PAGES.name}/{e["slug"]}"'
                 f' rel="noreferrer">github</a>') if REPO else ""
-        pins_html = ""
-        for r in e["refs"]:
-            label = html.escape(f'{r["name"]}@{r["commit"]}')
-            u = commit_link(r["url"], r["commit"])
-            pins_html += (f'<a class="ref" href="{u}" rel="noreferrer">{label}</a>'
-                          if u else f'<span class="ref">{label}</span>')
-        pins_ = pins_html
+        banner = ""
+        if e["why"]:
+            banner = ('<div class="provisional"><p><strong>Provisional.</strong> These numbers are '
+                      'not settled:</p><ul>'
+                      + "".join(f"<li>{html.escape(w)}</li>" for w in e["why"]) + "</ul></div>")
         body += f"""
       <section class="entry" id="{e['slug']}" data-tags="{html.escape('|'.join(e['tags']))}"
                data-month="{e['date'][:7]}">
         <p class="label">{e['updated']} {tags}</p>
         <h2 class="etitle"><a class="anchor" href="#/entry/{e['slug']}">{html.escape(e['title'])}</a></h2>
+        {banner}
         {e['body']}
-        <p class="tags">{hist}{pins_}</p>
+        <p class="tags">{hist}{e['pins']}</p>
+        {e['prov']}
       </section>"""
 
-    # a ref-only row is cited for its pin, not as a source: it belongs in the page footer
+    # every dependency with a url that some page ran, then the reading list
     ref_only = {r[2].rstrip("/") for r in rows if r[1] == "ref-only"}
     named = {r[2].rstrip("/"): r[0] for r in rows if r[2]}
     cited = {}
     for e in entries:
-        for r in e["refs"]:
-            u = r["url"].rstrip("/")
-            if u in ref_only:
-                continue
-            cited.setdefault(u, named.get(u, r["name"]))
+        plan = L.Plan(Path(e["path"]).parent, strict=False)
+        for step in plan.steps.values():
+            for name, _ in step["uses"]:
+                u = plan.deps[name]["url"].rstrip("/")
+                if u and "{version}" not in u and u not in ref_only:
+                    cited.setdefault(u, named.get(u, name))
     listed = [(name, url) for url, name in cited.items()]
-    for r in sidebar_sources(rows):                       # extras no page cites
+    for r in sidebar_sources(rows):                       # extras no page ran
         if r[2].rstrip("/") not in cited:
             listed.append((r[0], r[2]))
     srcs = "".join(
@@ -547,8 +353,11 @@ def build(site=None, drafts=True):
         n=len(entries), latest=recent[0]["updated"],
         )
     emit(page, site)
+    L.HASHER.save()
     for p in held:
         print(f"  draft, not published: {p.parent.name}")
+    for slug, why in unsettled.items():
+        print(f"  provisional: {slug}: {why[0]}" + (f" (and {len(why) - 1} more)" if len(why) > 1 else ""))
     print(f"{len(entries)} pages, {len(counts)} tags, "
           f"{len(sidebar_sources(rows))} sources listed of {len(rows)}")
     print(f"  newest: {recent[0]['slug']} ({recent[0]['date']}) {recent[0]['title'][:52]}")
@@ -593,6 +402,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     --measure:64ch; --s1:.4rem; --s2:.8rem; --s3:1.4rem; --s4:2.2rem; --s5:3.4rem;
   }
   @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) figure.plain img, :root:not([data-theme="light"]) figure.plain svg {
+      filter:invert(1) hue-rotate(180deg); }
 :root { --ground:#17120E; --panel:#201913; --ink:#E9E0D2; --muted:#A08D77; --rule:#3A2E24;
       --accent:#E08A4A; --visited:#B9A0E0; --blue:#8C99FF;
       --ok:#5FB48C; --amber:#D2A05A; --oxide:#D77C6E; --chip-bg:#241C15; --sel:#3A2C1C; --fig1:#4F93E6; --fig2:#E06A36; }
@@ -600,6 +411,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   :root[data-theme="dark"] { --ground:#17120E; --panel:#201913; --ink:#E9E0D2; --muted:#A08D77; --rule:#3A2E24;
       --accent:#E08A4A; --visited:#B9A0E0; --blue:#8C99FF;
       --ok:#5FB48C; --amber:#D2A05A; --oxide:#D77C6E; --chip-bg:#241C15; --sel:#3A2C1C; --fig1:#4F93E6; --fig2:#E06A36; }
+  :root[data-theme="dark"] figure.plain img, :root[data-theme="dark"] figure.plain svg {
+    filter:invert(1) hue-rotate(180deg); }
   :root[data-theme="light"] { --ground:#EFE7DA; --panel:#F7F2E8; --ink:#1E1611;
     --muted:#6B5B4A; --rule:#D8CBB6; --accent:#A8480A; --visited:#551A8B;
     --blue:#2B2BB8; --ok:#2C6B4E; --amber:#8A5A12; --oxide:#9C3A30;
@@ -691,13 +504,39 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
      in a title attribute */
   .toctitle { font-size:1rem; line-height:1.3; white-space:nowrap; overflow:hidden;
     text-overflow:ellipsis; }
-  math.eq { display:block; overflow-x:auto; margin:var(--s2) 0; font-size:1.05rem; }
+  /* overflow-x alone makes the equation scroll on both axes, and one a few pixels taller
+     than its box then takes the wheel from the page, so the other axis is closed */
+  math.eq { display:block; overflow-x:auto; overflow-y:hidden; margin:var(--s2) 0; font-size:1.05rem; }
+  .eqn { display:flex; align-items:center; gap:var(--s2); }
+  .eqn math.eq { flex:1; } .eqn .eqnum { color:var(--muted); font-size:.9rem; }
   .scroll { overflow-x:auto; background:var(--panel); border:1px solid var(--rule); border-radius:2px; }
   /* a figure is inline SVG from make-assets, drawn in currentColor and the --fig tokens */
   figure.fig { margin:0; background:var(--panel); border:1px solid var(--rule); border-radius:2px;
     padding:var(--s2); overflow-x:auto; }
   figure.fig svg { display:block; width:100%; height:auto; min-width:34rem; }
-  figure.fig figcaption { font-size:.86rem; color:var(--muted); margin-top:var(--s1); line-height:1.45; }
+  figure.fig figcaption, figure.tbl figcaption, p.tblcap {
+    font-size:.86rem; color:var(--muted); margin-top:var(--s1); line-height:1.45; }
+  figure.fig img { display:block; max-width:100%; height:auto; }
+  figure.tbl { margin:0; } figure.tbl figcaption { margin:0 0 var(--s1); }
+  figure.tbl th, figure.tbl td { text-align:left; }
+  figure.tbl th.num, figure.tbl td.num { text-align:right; }
+  figure.tbl.compact th, figure.tbl.compact td { padding:.2em .6em; }
+  .capnum { color:var(--ink); font-weight:600; }
+  mark { background:var(--sel); color:inherit; padding:0 .15em; border-radius:2px; }
+  pre.out { font-family:var(--mono); font-size:.76rem; line-height:1.5; background:var(--panel);
+    border:1px solid var(--rule); border-radius:2px; padding:var(--s2); overflow-x:auto; margin:0; }
+  a.xref, a.cite { text-decoration:none; }
+  .refs { margin-top:var(--s3); font-size:.9rem; } .refs ol { padding-left:1.2em; }
+  .refs li { margin-bottom:var(--s1); }
+  .provisional { border:1px solid var(--amber); border-left-width:4px; border-radius:2px;
+    padding:var(--s1) var(--s2); margin:var(--s2) 0; font-size:.9rem; color:var(--amber); }
+  .provisional p, .provisional ul { margin:.2em 0; }
+  details.prov { margin-top:var(--s2); font-size:.86rem; color:var(--muted); }
+  details.prov summary { cursor:pointer; font-family:var(--mono); font-size:.76rem; }
+  details.prov table { margin-top:var(--s1); } details.prov td, details.prov th { text-align:left;
+    white-space:normal; vertical-align:top; }
+  details.prov .hash { color:var(--muted); } details.prov li.bad { color:var(--oxide); }
+  details.prov ul { padding-left:1.2em; }
   .fig svg { color:var(--ink); }
   .fig .grid { stroke:var(--rule); } .fig .base { stroke:var(--muted); stroke-opacity:.5; }
   .fig .band { fill:currentColor; fill-opacity:.07; }
@@ -904,6 +743,15 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   }
 
   document.addEventListener("click", function (ev) {
+    // a reference to a figure, a table, an equation or a citation: the address bar holds the
+    // route, so the jump is made here rather than by changing the hash
+    var x = ev.target.closest ? ev.target.closest("[data-xref]") : null;
+    if (x) {
+      ev.preventDefault();
+      var to = document.getElementById(x.getAttribute("data-xref"));
+      if (to) to.scrollIntoView({ block: "center" });
+      return;
+    }
     var b = ev.target.closest ? ev.target.closest("[data-tag],[data-date]") : null;
     if (b) {
       only = null;
@@ -1005,24 +853,3 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
 })();
 </script>
 """
-
-
-def run_pages(args, generate=False):
-    check = "--check" in args
-    force = "--force" in args
-    accept = "--accept-artifacts" in args
-    args = [a for a in args if a not in ("--check", "--force", "--accept-artifacts")]
-    want = args[0] if args else None
-
-    key = "artifacts" if generate else "assets"
-    dirs = sorted(d for d in PAGES.iterdir()
-                  if d.is_dir() and (header(d).get(key) or {}).get("make")
-                  and (want is None or d.name.startswith(want)))
-    if not dirs:
-        raise SystemExit(f"no page matches {want!r}" if want else f"no page makes {key}")
-
-    if not all([run(d, check, generate, force, accept) for d in dirs]):
-        raise SystemExit("output moved under --check; rerun without it to accept the new numbers"
-                         if check else "a page failed; its cached output is unchanged")
-
-

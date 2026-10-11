@@ -1,14 +1,15 @@
 # sloop
 
 A lab notebook as one self-contained HTML page: dated entries of prose whose numbers come
-from the scripts that produced them, each entry pinned to the commit of the repository it
-rests on.
+from the scripts that produced them, each entry recording what it ran, at which version, and
+the hash of everything it read and wrote.
 
-A `{{key}}` anywhere in a page is replaced by a value the page's own script printed, so a
-number in the prose cannot drift from the computation behind it. Rerun the build and the
-prose follows. Declared assets that are missing, refs at the wrong commit and artifacts
-whose digests have changed all stop the build, because a page that cannot be reproduced
-should not render.
+A `{{key}}` anywhere in a page is replaced by a value one of the page's steps wrote, so a
+number in the prose cannot drift from the computation behind it. Rerun the step and the prose
+follows. A page declares its steps, and `page.lock` beside it records each one. An input that
+has changed underneath a page, a tool at the wrong version and a check that fails are all
+refused until someone says the change was meant, and a page that reads unfinished work says
+so on its face and cannot be published.
 
 > *slop* is an anagram of *PLoS*, the Public Library of Slop. We generate slop data, run
 > slop analyses and present slop results, and then draw real conclusions, which is only
@@ -24,13 +25,17 @@ That puts `sloop` on the path, with `notebook` as an alias.
 
 ## Use
 
-    sloop init my-notebook         # notebook.yml and pages/
-    sloop new "A title"            # the next page, numbered and dated
-    sloop build                    # render it into site/index.html
-    sloop serve                    # build, serve on localhost, rebuild as pages change
-    sloop assets [NN]              # run a page's script and cache what it printed
-    sloop artifacts NN             # run the long analysis behind those assets
-    sloop pack sloop.pyz           # pack the builder into one file for deployment
+    sloop init my-notebook              # notebook.yml and pages/
+    sloop new starving-column "A title" # a page, dated
+    sloop build                         # render it into site/index.html
+    sloop serve                         # build, serve on localhost, rebuild as pages change
+    sloop status [PAGE]                 # where each step stands; runs checks and no steps
+    sloop make PAGE [STEP]              # run what is stale, in order; a frozen step only by name
+    sloop freeze PAGE STEP              # fix a step as it stands, without running it
+    sloop unfreeze PAGE STEP            # make it an ordinary step again
+    sloop accept PAGE WHAT -m "why"     # say a changed input or version was meant
+    sloop cite DOI                      # add a reference to the notebook's .bib file
+    sloop pack sloop.pyz                # pack the builder into one file for deployment
 
 The notebook is the directory holding `notebook.yml`: pass `--dir`, set `$NOTEBOOK_DIR`, or
 run from anywhere at or below it, so the commands work from inside a page.
@@ -42,17 +47,60 @@ run from anywhere at or below it, so the commands work from inside a page.
     branch: main
     pages: pages            # where the page directories live
     out: site               # where the built page is written
-    sources: sources.tsv    # optional, the sidebar's reading list
-    checkouts: ..           # where the repositories a page pins by commit are checked out
+    checkouts: ..           # where a dependency is looked for when it gives no path
+    bibliography: references.bib
     serve:
       port: 8099
       edit: true            # the in-browser page editor, on localhost only
 
-Only `title` is needed. Everything above is the default.
+    dependencies:           # what a page can depend on, declared once
+      sim:
+        url: https://github.com/you/sim
+        version: sim --version
+      R:
+        version: Rscript -e 'cat(as.character(getRversion()))'
+      families:
+        url: https://github.com/you/families
+      batches:
+        path: /data/batches
+
+    sources:                # the sidebar's reading list
+      - name: a paper
+        url: https://example.org
+        note: why it is here
+
+    figure_colors:          # literal colours in a figure, and the stylesheet variable each stands for
+      "#000000": ink
+      "#1b9e77": fig1
+
+Only `title` is needed.
+
+### Dependencies
+
+The kind of a dependency is read off its fields, because the kinds are not exclusive:
+
+| An entry with | is | and its version is |
+|---|---|---|
+| `version` | a tool: an installed program or package | the one line that command prints |
+| `url` and no `version` | a repository checked out on disk | the checkout's commit |
+| neither | a data directory | none |
+
+`url` is where a thing comes from, the same on every machine, and it is the link behind a
+version shown on a page: a commit on a git host links to that commit, a url containing
+`{version}` is a pattern, and anything else links as it stands.
+
+`path` is where a repository or a data directory sits on this machine. It is looked for in
+three places, first match winning: the environment variable `SLOOP_<NAME>`, the entry's own
+`path`, and `<checkouts>/<name>`. `$CHECKOUTS` moves the default for one machine. A step's
+command receives each location as `$<NAME>`, without the prefix. A tool has no path: it is
+whatever its version command finds, and installing the right one is up to you.
+
+A dependency that is not on this machine is reported as not checkable here, not as missing.
+A build never needs any of them.
 
 ## Deploying
 
-`sloop pack` writes a zipapp carrying its own markdown and yaml, about 180 KB, which runs
+`sloop pack` writes a zipapp carrying everything it imports, under 1 MB, which runs
 on any python3 with nothing installed and nothing to resolve:
 
     sloop pack sloop.pyz
@@ -65,33 +113,117 @@ so the archive is platform independent and the pure-Python parser is used instea
 
 ## A page
 
-A page is a directory under `pages/`, numbered so entries can cite each other, holding a
-`page.md` whose header is YAML terminated by `---`:
+A page is a directory under `pages/` holding a `page.md` whose header is YAML terminated by
+`---`:
 
     title: The col=3 move was starving the column that mixes worst
     date: 2026-10-10
     draft: true                    # keeps it local: `sloop build --no-drafts` holds it back
     tags: mcmc, moves
-    refs:                          # checkouts the page rests on, verified before anything runs
-      - url: https://github.com/you/sim
-        commit: 2523662d3
-    assets:                        # tracked, and all a build reads
-      make: bash make-assets
-      paths: [data.out]
-    artifacts:                     # the long output, left where it was made
-      make: bash make-artifacts
-      paths: [sim/sims/rho0n10/specimens]
+    steps:
+      simulate:
+        cmd: ./simulate.sh
+        uses: sim@2523662            # runs this, which must be at this version
+        frozen: true                 # runs only when named, never overwrites without --force
+        outputs: [batches/rho0/specimens]
+      summarize:
+        cmd: ./summarize.R
+        uses: R@4.5.3
+        inputs:  [batches/rho0/specimens]
+        outputs: [values.tsv, ranks.csv]
+    checks:
+      three intervals:
+        cmd: head -1 $BATCHES/rho0/true_vals.tsv | tr '\t' '\n' | grep -c '^lambda'
+        expect: 3
     ---
     Body, in Markdown. Raw HTML passes through.
 
-`sloop artifacts NN` runs the long step, which may take hours and refuses to overwrite
-output that already exists. `sloop assets NN` reduces it to a few numbers and caches them
-in `data.out`, which is committed with the page. A build reads the assets only, so a clone
-renders the whole notebook with no checkout and no analysis at all.
+Steps are named as the page likes, and there can be any number.
 
-A make script prints its summary to stdout. Everything after a line reading `## values` is
-`key<TAB>value` pairs, and those are the `{{key}}` substitutions. A `{{key}}` with no value
-stops the build, as does a declared asset that is missing.
+| Field | Meaning |
+|---|---|
+| `cmd` | The command, run from the page directory. |
+| `uses` | `name@version`, or a list: the step runs that dependency, which must be at that version when the step runs. The version has to be stated. |
+| `frozen` | The step runs only when named, and never overwrites its outputs without `--force`. |
+| `inputs` | Paths the step reads. |
+| `outputs` | Paths the step writes. |
 
-Each ref reaches the make script as an environment variable named after it, uppercased:
-`$SIM` above, resolved against `checkouts`.
+A path whose first part names a dependency is inside that checkout or data directory, and
+anything else is relative to the page. Edges come from paths: a step that reads what another
+writes runs after it. A step's own script, every word of `cmd` that names a file in the page
+directory, is an input without being listed. A cycle, two steps writing the same path and a
+`uses` that names nothing are refused before anything runs.
+
+A page with no script behind it can still say what it rests on, with `uses:` at the top of
+its header. That is shown and never enforced.
+
+### The record
+
+`sloop make` writes `page.lock` beside the page: for each step, the versions it ran and the
+hash of every path it read and wrote. It is committed, and it is what a review reads. A
+step is then one of
+
+| State | Meaning |
+|---|---|
+| missing | an output is not there |
+| moved | an output differs from what the step recorded writing |
+| stale | an input, a script or a stated version differs from what it recorded |
+| unrecorded | its outputs are there, and nothing says how they got there |
+| current | none of those |
+
+A stale step that is not frozen is simply rerun. What is not supposed to change underneath a
+page is refused instead: an input that lives in a dependency and that no step here writes,
+the output of a frozen step, a version. `sloop accept PAGE WHAT -m "why"` writes down that
+the change was meant, in the lock, with the reason.
+
+`sloop freeze PAGE STEP` records a step as it stands without running it, for work done
+outside sloop, such as a fit started on a cluster. It is the one place sloop takes your
+word, so it is only for what cannot be cheaply rerun.
+
+A check is a command of a line or two with the answer the page expects. Its definition is
+hashed into the lock, so an edited check shows in the diff.
+
+Hashes are remembered by file size and modification time in `.sloop/`, which should be
+ignored by git, so a directory of ten thousand logs is not read again on every status.
+`sloop status --rehash` reads everything, and freezing and building always do.
+
+### Unfinished work
+
+A page that reads the output of a step with no record, or whose quick step ran on
+uncommitted code, is provisional: the lock says why, the page carries a banner, and
+`sloop build --no-drafts` fails on it unless it is marked `draft: true`. Nothing clears that
+by hand. A frozen step refuses to run on uncommitted code at all, because a result that took
+weeks could then never be traced to what made it.
+
+So results can be watched as they come in: with a fit running, `sloop make PAGE` skips it and
+reruns the summary against the logs that exist, as often as you like.
+
+### Writing
+
+| In a page | Becomes |
+|---|---|
+| `{{key}}` | a value from `values.tsv`, or any `*.values.tsv` a step wrote: one `key<TAB>value` a line |
+| `$x^2$`, `$$ ... $$` | math, converted to MathML at build time |
+| `![A caption](ranks.csv)` on a line by itself | a table: the first row is the header, a cell is inline Markdown |
+| `![A caption](plot.svg)` | a figure, inlined; `.png` and `.jpg` are embedded, `.md` is included, `.txt` is shown as it is |
+| `{#fig:name}`, `{#tbl:name}`, `{#eq:name}` after one of those | a label, which numbers it |
+| `@fig:name`, `[@fig:a; @tbl:b]` | "Figure 2", linked |
+| `[@Key]`, `@Key` | a citation from the `.bib` file, and a reference list at the foot of the page |
+| `==text==` | a highlight |
+
+A `{{key}}` with no value, an embedded file that is missing, a reference to a label that is
+not there, a citation that is not in the `.bib` file and math the converter does not know
+all stop the build. A table's emphasis belongs in the data: the script that knows which
+number is notable writes `**0.555**` or `==+2.69==` in the cell, and it follows the numbers
+when they are regenerated.
+
+An SVG's colours that are listed under `figure_colors` are swapped for the stylesheet
+variables they stand for, so the figure follows the page between light and dark. One with
+none of them, and any bitmap, is inverted in the dark instead.
+
+The spelling is Pandoc's wherever there was a choice, so a page can be handed to it for a
+manuscript. `sloop cite 10.1371/journal.pcbi.1007999` asks doi.org for the entry and appends
+it to the `.bib` file as supplied.
+
+A build reads only committed files: the page, its lock, and the outputs beside it. It checks
+that those outputs are the ones the lock records, and needs no checkout, no tool and no data.

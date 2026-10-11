@@ -8,8 +8,8 @@ build-backend = "setuptools.build_meta"
 name = "sloop"
 version = "0.1.0"
 description = "A lab notebook whose numbers come from the scripts that produced them"
-requires-python = ">=3.9"
-dependencies = ["PyYAML", "markdown"]
+requires-python = ">=3.10"
+dependencies = ["PyYAML", "markdown", "latex2mathml", "bibtexparser>=2"]
 
 [project.scripts]
 sloop = "sloop.cli:main"

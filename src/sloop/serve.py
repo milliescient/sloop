@@ -150,7 +150,7 @@ def fingerprint(root, conf):
     """
     h = hashlib.sha256()
     watched = sorted(p for p in conf["pages"].rglob("*") if p.is_file())
-    for f in watched + [conf["sources"], root / "notebook.yml", root / ".git/logs/HEAD"]:
+    for f in watched + [conf["bibliography"], root / "notebook.yml", root / ".git/logs/HEAD"]:
         try:
             h.update(f.read_bytes())
         except OSError:
