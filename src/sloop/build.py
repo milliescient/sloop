@@ -33,6 +33,7 @@ import html
 import re
 import subprocess
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from string import Template
 
@@ -147,6 +148,15 @@ def last_activity():
     return {name: when for name, when in seen.items() if name in live}
 
 
+def written(page_dir):
+    """When a page with no commit yet was last written, in the form the log gives."""
+    try:
+        newest = max(p.stat().st_mtime for p in page_dir.iterdir() if p.is_file())
+    except (OSError, ValueError):
+        return ""
+    return datetime.fromtimestamp(newest).astimezone().isoformat(timespec="seconds")
+
+
 def is_draft(path):
     """Read only the header. A draft must not block a build, so a broken one is left
     for parse() to report rather than raising here."""
@@ -185,7 +195,8 @@ def parse(path):
 
 
 def provenance(page_dir):
-    """(the versions a page's steps ran as links, the block a reader can open).
+    """The block a reader can open: each step's versions, inputs and outputs, as links.
+    The hashes stay in the lock.
 
     Everything here is read from the lock, so it says what was recorded where the work was
     done, and it is on the page whether or not this machine could check any of it.
@@ -201,27 +212,58 @@ def provenance(page_dir):
         return (f'<a class="ref" href="{html.escape(href)}" rel="noreferrer">{label}</a>' if href
                 else f'<span class="ref">{label}</span>')
 
-    seen, pins = list(plan.rests_on), "".join(use(u) for u in plan.rests_on)
-    rows = ""
+    def uses(us):
+        return "".join(use(u) for u in dict.fromkeys(us))
+
+    def href(p, pinned):
+        """Where a reader can open a path: the notebook's own files, and a pinned repository's."""
+        first, _, rest = p.partition("/")
+        dep = plan.deps.get(first)
+        if dep is None:
+            try:
+                rel = (page_dir / p).resolve().relative_to(ROOT.resolve())
+            except ValueError:
+                return ""
+            return f"{REPO}/blob/{BRANCH}/{rel.as_posix()}" if REPO else ""
+        ver = re.sub(r"(\+uncommitted|-dirty)$", "", pinned.get(first, ""))
+        if rest and "github.com" in dep["url"] and re.fullmatch(r"[0-9a-f]{6,40}", ver):
+            return f'{dep["url"].rstrip("/")}/blob/{ver}/{rest}'
+        return ""
+
+    def row(label, cell):
+        return f'<dt>{label}</dt><dd>{cell}</dd>' if cell else ""
+
+    block = row("uses", uses(plan.rests_on))
+    block = f'<dl class="page">{block}</dl>' if block else ""
     for name in plan.order:
         rec = lock["steps"].get(name) or {}
-        for u in rec.get("uses") or []:
-            if u not in seen:
-                seen.append(u)
-                pins += use(u)
-        # what a manifest beside a path says made it: shown and linked, never checked
-        with_ = lambda p: "".join(
-            f'<div class="made">made with {"".join(use(u) for u in us)}</div>'
-            for us in [(rec.get("made_with") or {}).get(p)] if us)
-        paths = lambda side: "".join(
-            f'<div><code>{html.escape(p)}</code> <span class="hash">{html.escape(str(h))}</span></div>'
-            + with_(p) for p, h in (rec.get(side) or {}).items())
-        rows += (f'<tr><td>{html.escape(name)}{" <em>frozen</em>" if plan.steps[name]["frozen"] else ""}'
-                 f'{"" if rec else " <em>no record</em>"}</td>'
-                 f'<td>{"".join(use(u) for u in rec.get("uses") or [])}</td>'
-                 f'<td>{paths("inputs")}</td><td>{paths("outputs")}</td></tr>')
-    block = ('<table><thead><tr><th>step</th><th>ran</th><th>read</th><th>wrote</th></tr></thead>'
-             f'<tbody>{rows}</tbody></table>') if rows else ""
+        made = rec.get("made_with") or {}
+        pinned = dict(u.split("@", 1) for u in rec.get("uses") or [] if "@" in u)
+
+        def paths(side):
+            out = ""
+            for p in rec.get(side) or {}:
+                to = href(p, pinned)
+                label = f"<code>{html.escape(p)}</code>"
+                label = f'<a href="{html.escape(to)}" rel="noreferrer">{label}</a>' if to else label
+                out += f'<div class="path">{label}</div>'
+            return out
+
+        # a step that states no version still rests on the ones that made what it reads
+        through = []
+        for p in rec.get("inputs") or {}:
+            # and what a manifest beside a path says made it: shown and linked, never checked
+            by, _ = plan.producer(p)
+            if by and by != name:
+                through += (lock["steps"].get(by) or {}).get("uses") or []
+            through += made.get(p) or []
+        stated = rec.get("uses") or []
+        through = [u for u in dict.fromkeys(through) if u not in stated]
+        used = uses(stated) + (f'<span class="via">through its inputs</span>{uses(through)}' if through else "")
+        note = (" <em>frozen</em>" if plan.steps[name]["frozen"] else "") + ("" if rec else " <em>no record</em>")
+        block += (f'<section class="step"><p class="stepname">{html.escape(name)}{note}</p><dl>'
+                  + row("uses", used) + row("input", paths("inputs")) + row("output", paths("outputs"))
+                  + '</dl></section>')
     if plan.checks:
         block += '<ul class="checks">'
         for name, c in plan.checks.items():
@@ -241,7 +283,8 @@ def provenance(page_dir):
             block += (f'<li>accepted: <code>{html.escape(str(what))}</code>{moved} '
                       f'&mdash; {html.escape(str(a.get("why", "")))}</li>')
         block += "</ul>"
-    return pins, f'<details class="prov"><summary>provenance</summary>{block}</details>' if block else ""
+    return (f'<details class="prov"><summary><span class="ref">provenance</span></summary>'
+            f'<div class="provbody">{block}</div></details>') if block else ""
 
 
 def read_sources():
@@ -275,11 +318,11 @@ def build(site=None, drafts=True):
     for e in entries:
         # the timestamp orders, the date displays: two pages committed the same day
         # still sort in the order they were touched
-        e["stamp"] = activity.get(e["slug"], e["date"])
-        e["updated"] = stamp_text(e["stamp"])
         page_dir = Path(e["path"]).parent
+        e["stamp"] = activity.get(e["slug"]) or written(page_dir) or e["date"]
+        e["updated"] = stamp_text(e["stamp"])
         e["why"] = L.gate(page_dir)
-        e["pins"], e["prov"] = provenance(page_dir)
+        e["prov"] = provenance(page_dir)
         if e["why"]:
             unsettled[e["slug"]] = e["why"]
     # A page whose record does not hold is shown as such while it is being worked on, and is
@@ -325,12 +368,13 @@ def build(site=None, drafts=True):
         body += f"""
       <section class="entry" id="{e['slug']}" data-tags="{html.escape('|'.join(e['tags']))}"
                data-month="{e['date'][:7]}">
+        <div class="text">
         <p class="label">{e['updated']} {tags}</p>
         <h2 class="etitle"><a class="anchor" href="#/entry/{e['slug']}">{html.escape(e['title'])}</a></h2>
         {banner}
         {e['body']}
-        <p class="tags">{hist}{e['pins']}</p>
-        {e['prov']}
+        </div>
+        <div class="foot">{hist}{e['prov']}</div>
       </section>"""
 
     # every dependency with a url that some page ran, then the reading list
@@ -454,7 +498,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   .filterhead { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s2); }
   .filters { display:flex; flex-direction:column; gap:.2rem; }
   .main { min-width:0; display:flex; flex-direction:column; gap:var(--s4); }
-  .entry, .empty { max-width:var(--measure); }
+  /* the measure is on the text an entry holds, so its footer can run wider */
+  .entry > .text, .empty { max-width:var(--measure); }
 
   .label { font-family:var(--mono); font-size:.68rem; text-transform:uppercase;
     letter-spacing:.11em; color:var(--muted); margin:0; }
@@ -476,7 +521,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     border:0; cursor:pointer; padding:0; display:none; }
   #reset.on { display:inline; }
 
-  .entry { display:flex; flex-direction:column; gap:var(--s2); scroll-margin-top:7rem;
+  .entry, .entry > .text { display:flex; flex-direction:column; gap:var(--s2); }
+  .entry { scroll-margin-top:7rem;
     padding-bottom:var(--s3); border-bottom:2px inset var(--rule); }
   h2.etitle { font-size:1.4rem; line-height:1.25; margin:0; font-weight:600; letter-spacing:-.01em; }
   h2.etitle a.anchor { color:inherit; text-decoration:none; }
@@ -534,13 +580,31 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   .provisional { border:1px solid var(--amber); border-left-width:4px; border-radius:2px;
     padding:var(--s1) var(--s2); margin:var(--s2) 0; font-size:.9rem; color:var(--amber); }
   .provisional p, .provisional ul { margin:.2em 0; }
-  details.prov { margin-top:var(--s2); font-size:.86rem; color:var(--muted); }
-  details.prov summary { cursor:pointer; font-family:var(--mono); font-size:.76rem; }
-  details.prov table { margin-top:var(--s1); } details.prov td, details.prov th { text-align:left;
-    white-space:normal; vertical-align:top; }
-  details.prov .hash { color:var(--muted); } details.prov li.bad { color:var(--oxide); }
-  details.prov ul { padding-left:1.2em; }
-  details.prov .made { padding-left:1.2em; font-size:.76rem; } details.prov .made .ref { margin-left:.4em; }
+  .entry > .foot { display:flow-root; }
+  .foot > a.ref { float:left; margin-right:var(--s1); line-height:1.5; }
+  details.prov { font-size:.86rem; color:var(--muted); }
+  details.prov summary { cursor:pointer; list-style:none; line-height:1.5; }
+  details.prov summary::-webkit-details-marker { display:none; }
+  details.prov summary .ref { display:inline-block; }
+  details.prov summary:hover .ref, details.prov[open] summary .ref {
+    color:var(--accent); border-color:var(--accent); }
+  /* open, it is a footer across the text column and the sources rail, and covers the rail */
+  details.prov[open] { margin-right:calc(-11rem - var(--s5)); }
+  .provbody { clear:left; position:relative; z-index:1; background:var(--ground);
+    margin-top:var(--s2); padding:var(--s2) 0; border-top:1px solid var(--rule);
+    display:flex; flex-direction:column; gap:var(--s3); font-family:var(--mono); font-size:.72rem; }
+  .provbody .stepname { color:var(--ink); font-weight:600; margin:0 0 var(--s1); }
+  .provbody em { font-weight:400; color:var(--muted); }
+  .provbody dl { display:grid; grid-template-columns:4rem minmax(0,1fr); gap:var(--s1) var(--s2); margin:0; }
+  .provbody dt { text-transform:uppercase; letter-spacing:.06em; font-size:.68rem; font-weight:600; }
+  .provbody dd { margin:0; display:flex; flex-wrap:wrap; gap:.3rem var(--s1); align-items:baseline; }
+  .provbody .path { flex-basis:100%; display:flex; flex-wrap:wrap; gap:.2rem var(--s2); align-items:baseline; }
+  .provbody .path code { font-size:1em; overflow-wrap:anywhere; }
+  .provbody .path a { text-decoration:none; } .provbody .path a:hover { text-decoration:underline; }
+  .provbody a.ref { color:var(--accent); }
+  .provbody .via { font-size:.66rem; }
+  .provbody ul { margin:0; padding-left:1.2em; font-family:var(--serif); font-size:.86rem; }
+  .provbody li.bad { color:var(--oxide); }
   .fig svg { color:var(--ink); }
   .fig .grid { stroke:var(--rule); } .fig .base { stroke:var(--muted); stroke-opacity:.5; }
   .fig .band { fill:currentColor; fill-opacity:.07; }
@@ -597,6 +661,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     .topbar .head { grid-column:1; }
     .shell { padding:var(--s3); }
     .side { position:static; border-bottom:1px solid var(--rule); padding-bottom:var(--s2); }
+    details.prov[open] { margin-right:0; }
     .side.right { border-bottom:0; border-top:1px solid var(--rule); padding-top:var(--s2); }
     .filters, .sources { flex-direction:row; flex-wrap:wrap; }
     .tag { width:auto; border-left:0; border-bottom:2px solid transparent; }

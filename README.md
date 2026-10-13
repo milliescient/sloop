@@ -165,8 +165,13 @@ hash of every path it read and wrote. It is committed, and it is what a review r
 A tool that makes data may pick its own tools, as simfbd picks the build of rb that fits a
 run. Where a path a step reads or writes has a `manifest.yml` at or above it with a `uses`
 list of `name@version`, the lock copies the list under `made_with`, and the provenance block
-shows it under that path, each name linked through its entry in `dependencies`. It says what
+shows it under the step's `uses`, each name linked through its entry in `dependencies`. It says what
 ran there and is never compared with what is installed here.
+
+On the page the block opens as a footer under the entry, one step after another, each with
+what it `uses`, its `input` and its `output`. A version links to its commit and a file in the
+notebook links to itself. A step that states no `uses` shows the versions it rests on through
+its inputs: those of the step that wrote them, and those a manifest names.
 
 A step is then one of
 
