@@ -95,6 +95,29 @@ three places, first match winning: the environment variable `SLOOP_<NAME>`, the 
 command receives each location as `$<NAME>`, without the prefix. A tool has no path: it is
 whatever its version command finds, and installing the right one is up to you.
 
+A tool whose version is the commit of its source can be provisioned, so that a step runs
+against the commit it states and not against whatever is installed:
+
+```yaml
+dependencies:
+  simfbd:
+    url: https://github.com/you/simfbd
+    version: simfbd --version
+    provision: worktree
+    provides: {PATH: bin, PYTHONPATH: src}
+```
+
+A step that states `simfbd@1616e09` is then run against a git worktree of that commit, which
+`sloop make` creates from the tool's own checkout the first time it is needed and keeps under
+`<checkouts>/.sloop/simfbd/`. That checkout is found as a repository's is. `provides` names
+the directories of the worktree to put first on each variable, and one a commit does not have
+is left out. The version command is run the same way and still has to print the stated commit,
+so a `provides` that does not reach the worktree is refused, not trusted. Two steps can state
+two commits of one tool, and the checkout you work in is never moved. The command also
+receives the worktree as `$<NAME>`. `sloop prune` removes the worktrees no step states any
+more. A commit the checkout does not have is refused: fetch it. A version that is not a
+commit, or one built with uncommitted changes, cannot be provisioned.
+
 A dependency that is not on this machine is reported as not checkable here, not as missing.
 A build never needs any of them.
 

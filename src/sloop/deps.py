@@ -22,13 +22,27 @@ whatever its version command finds.
 
 A version is compared as a string. For a repository it is the checkout's commit, and for a
 tool it is the one line its version command prints, which can be a number, a commit, anything.
+
+A tool whose version is the commit of its source can be provisioned:
+
+      simfbd:
+        url: https://github.com/you/simfbd
+        version: simfbd --version
+        provision: worktree                       # check out the commit a step states
+        provides: {PATH: bin, PYTHONPATH: src}    # and put these of its directories first
+
+A step that states simfbd@1616e09 is then run against a git worktree of that commit, made
+from the tool's own checkout (found as a repository's is) and kept under <checkouts>/.sloop.
+So two steps can state two commits of one tool, and neither moves the checkout you work in.
+The version command is run with the same directories first, and still has to print the
+commit the step states.
 """
 import os
 import re
 import subprocess
 from pathlib import Path
 
-FIELDS = {"url", "version", "path"}
+FIELDS = {"url", "version", "path", "provision", "provides"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
@@ -55,11 +69,24 @@ def read(raw, where):
             raise SystemExit(f"{where}: dependency {name} has no field {sorted(unknown)[0]!r}; "
                              f"the fields are {', '.join(sorted(FIELDS))}")
         kind = "tool" if d.get("version") else "repository" if d.get("url") else "directory"
-        if kind == "tool" and d.get("path"):
+        provision, provides = d.get("provision"), d.get("provides") or {}
+        if provision not in (None, "worktree"):
+            raise SystemExit(f"{where}: {name} has provision: {provision}; it can be worktree")
+        if provision and kind != "tool":
+            raise SystemExit(f"{where}: {name} is provisioned, so it needs a version command "
+                             f"that prints the commit of its source")
+        if provides and not provision:
+            raise SystemExit(f"{where}: {name} has provides, which says what a provisioned "
+                             f"checkout puts first: add provision: worktree")
+        if not isinstance(provides, dict):
+            raise SystemExit(f"{where}: {name}: provides is a mapping of an environment "
+                             f"variable to a directory of the checkout")
+        if kind == "tool" and d.get("path") and not provision:
             raise SystemExit(f"{where}: {name} is a tool, which has no path: it is whatever "
                              f"its version command finds")
         out[str(name)] = {"url": (d.get("url") or "").strip(), "version": d.get("version"),
-                          "path": d.get("path"), "kind": kind}
+                          "path": d.get("path"), "kind": kind, "provision": provision,
+                          "provides": {str(k): str(v) for k, v in provides.items()}}
     return out
 
 
@@ -81,6 +108,11 @@ def locate(name, dep):
     """(path, which rule supplied it) for a repository or a data directory."""
     if dep["kind"] == "tool":
         return None, "a tool has no path"
+    return checkout(name, dep)
+
+
+def checkout(name, dep):
+    """Where a dependency's checkout is, which for a provisioned tool is its source."""
     var = "SLOOP_" + env_name(name)
     if os.environ.get(var):
         return Path(os.environ[var]).expanduser().resolve(), f"from ${var}"
@@ -98,12 +130,54 @@ def git(path, *args):
 _versions = {}
 
 
-def version(name, dep):
-    """(version, problem). The version is None when it cannot be found here."""
-    if name in _versions:
-        return _versions[name]
+def provisioned(name, dep, pinned, create=False):
+    """(the worktree of a provisioned tool at the commit a step states, problem). Without
+    create, a worktree that is not there yet is (None, None)."""
+    if not re.fullmatch(r"[0-9a-f]{7,40}", pinned):
+        return None, f"{name}@{pinned} is not a commit, so there is nothing to check out"
+    base, _ = checkout(name, dep)
+    if git(base, "rev-parse", "--git-dir") is None:
+        return None, f"{name}'s source is not on this machine: {base} is not a git checkout"
+    full = git(base, "rev-parse", "--verify", "--quiet", pinned + "^{commit}")
+    if full is None:
+        return None, f"{base} has no commit {pinned}: fetch it"
+    at = CHECKOUTS / ".sloop" / name / full[:12]
+    if at.is_dir():
+        if git(at, "rev-parse", "HEAD") != full:
+            return None, f"{at} is not at {pinned}: remove it and sloop makes it again"
+        if git(at, "status", "--porcelain", "--untracked-files=no"):
+            return None, f"{at} has been edited. It is {name}@{pinned} only as sloop made it"
+        return at, None
+    if not create:
+        return None, None
+    at.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["git", "-C", str(base), "worktree", "add", "--detach", str(at), full],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, f"could not check out {name}@{pinned}: {r.stderr.strip()[-200:]}"
+    return at, None
+
+
+def provided(name, dep, at, env=None):
+    """What a provisioned checkout adds to an environment: its directories first on the
+    variables it provides, and itself under the tool's name."""
+    env = dict(os.environ if env is None else env)
+    for var, rel in dep["provides"].items():
+        if (at / rel).is_dir():
+            env[var] = os.pathsep.join(filter(None, [str(at / rel), env.get(var)]))
+    env[env_name(name)] = str(at)
+    return env
+
+
+def version(name, dep, at=None):
+    """(version, problem). The version is None when it cannot be found here. With a
+    provisioned checkout, it is what the version command prints with that checkout first."""
+    key = (name, str(at)) if at else name
+    if key in _versions:
+        return _versions[key]
     if dep["kind"] == "tool":
-        r = subprocess.run(dep["version"], shell=True, capture_output=True, text=True, cwd=ROOT)
+        r = subprocess.run(dep["version"], shell=True, capture_output=True, text=True, cwd=ROOT,
+                           env=provided(name, dep, at) if at else None)
         lines = r.stdout.strip().splitlines()
         if r.returncode != 0 or not lines:
             out = (None, f"its version command failed: {(r.stderr.strip() or 'no output')[-200:]}")
@@ -124,7 +198,7 @@ def version(name, dep):
                 out = (head + ("+uncommitted" if dirty else ""), None)
     else:
         out = (None, "a data directory has no version")
-    _versions[name] = out
+    _versions[key] = out
     return out
 
 

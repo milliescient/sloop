@@ -9,6 +9,7 @@ Every path comes from the notebook being built, not from where the builder is in
     sloop freeze PAGE STEP              # fix a step as it stands, without running it
     sloop unfreeze PAGE STEP            # make it an ordinary step again
     sloop accept PAGE WHAT -m "why"     # say a changed input or version was meant
+    sloop prune                         # remove provisioned checkouts no step states any more
     sloop cite DOI                      # add a reference to the notebook's .bib file
     sloop new NAME ["A title"]          # scaffold a page
     sloop init [DIR]                    # start a notebook here
@@ -69,7 +70,7 @@ def start(where):
     print("  the out directory is generated, so keep it out of version control")
 
 
-COMMANDS = ("build", "serve", "status", "make", "freeze", "unfreeze", "accept", "cite",
+COMMANDS = ("build", "serve", "status", "make", "freeze", "unfreeze", "accept", "prune", "cite",
             "new", "init", "pack")
 
 
@@ -192,6 +193,9 @@ def main(argv=None):
     g.add_argument("what", help="a path as the page writes it, or a dependency's name")
     g.add_argument("-m", "--why", required=True, help="the reason, which is recorded")
 
+    sub.add_parser("prune", parents=[common],
+                   help="remove provisioned checkouts no step states any more")
+
     g = sub.add_parser("cite", parents=[common], help="add a reference by DOI")
     g.add_argument("doi")
 
@@ -247,6 +251,9 @@ def main(argv=None):
         return
     if a.cmd == "cite":
         cite(conf, a.doi)
+        return
+    if a.cmd == "prune":
+        locker.prune()
         return
     if a.cmd == "new":
         scaffold.new(conf["pages"], a.name, a.title, conf.get("dependencies") or {})

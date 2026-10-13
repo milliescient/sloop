@@ -453,8 +453,15 @@ def cmd_hash(cmd):
 
 # ---- running ----
 
-def environment(plan):
-    return dict(os.environ, PAGE=str(plan.dir), **D.environment(plan.deps))
+def environment(plan, step=None):
+    """What a command receives. A step also gets each provisioned tool it states, first."""
+    env = dict(os.environ, PAGE=str(plan.dir), **D.environment(plan.deps))
+    for dep_name, pinned in (step["uses"] if step else []):
+        dep = plan.deps[dep_name]
+        at = D.provisioned(dep_name, dep, pinned)[0] if dep["provision"] and pinned else None
+        if at:
+            env = D.provided(dep_name, dep, at, env)
+    return env
 
 
 def check_uses(plan, step):
@@ -462,9 +469,20 @@ def check_uses(plan, step):
     bad, ran = [], []
     for dep_name, pinned in step["uses"]:
         dep = plan.deps[dep_name]
-        found, problem = D.version(dep_name, dep)
+        at = None
+        if dep["provision"]:
+            at, problem = D.provisioned(dep_name, dep, pinned, create=True)
+            if at is None:
+                bad.append(problem)
+                continue
+        found, problem = D.version(dep_name, dep, at)
         if found is None:
             bad.append(f"{dep_name}: {problem}")
+            continue
+        if at and not D.matches(dep, pinned, found):
+            bad.append(f"{dep_name}@{pinned} is checked out at {at}, and its version command "
+                       f"still prints {found}: what {dep_name} provides in notebook.yml does "
+                       f"not put that checkout first")
             continue
         if not D.matches(dep, pinned, found):
             fix = ""
@@ -543,7 +561,7 @@ def run_step(plan, lock, name, force=False, check=False):
                 shutil.copy2(at, backup / p)
 
     print(f"running `{step['cmd']}`", flush=True)
-    r = subprocess.run(step["cmd"], shell=True, env=environment(plan), cwd=plan.dir)
+    r = subprocess.run(step["cmd"], shell=True, env=environment(plan, step), cwd=plan.dir)
     ok = r.returncode == 0
     gone = [p for p in step["outputs"] if not plan.where(p)[0].exists()]
     if ok and gone:
@@ -889,6 +907,14 @@ def status(page_dir, fresh=False):
         for w in why:
             print(f"      {w}")
         for dep_name, pinned in step["uses"]:
+            if pinned and plan.deps[dep_name]["provision"]:
+                at, problem = D.provisioned(dep_name, plan.deps[dep_name], pinned)
+                if problem:
+                    print(f"      {problem}: this step would refuse to run")
+                elif not (step["frozen"] and state == "current"):
+                    print(f"      {dep_name}@{pinned} " + (f"is checked out at {at}" if at else
+                          "is checked out when this step runs"))
+                continue
             found, problem = D.version(dep_name, plan.deps[dep_name])
             if not pinned:
                 print(f"      uses {dep_name} without a version; here it is "
@@ -911,6 +937,27 @@ def status(page_dir, fresh=False):
         print(f"  accepted: {what}: {a.get('why')}")
     HASHER.save()
     return ok
+
+
+def prune():
+    """Remove the provisioned checkouts no step of any page states any more."""
+    kept, root = set(), D.CHECKOUTS / ".sloop"
+    for d in pages():
+        plan = Plan(d, strict=False)
+        for step in plan.steps.values():
+            for dep_name, pinned in step["uses"]:
+                dep = plan.deps[dep_name]
+                at = D.provisioned(dep_name, dep, pinned)[0] if dep["provision"] and pinned else None
+                if at:
+                    kept.add(at)
+    for at in sorted(root.glob("*/*")) if root.is_dir() else []:
+        if at in kept or not at.is_dir():
+            continue
+        base = D.git(at, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        r = subprocess.run(["git", "-C", str(Path(base).parent if base else at), "worktree",
+                            "remove", str(at)], capture_output=True, text=True)
+        print(f"{at}: " + ("removed" if r.returncode == 0 else f"kept: {r.stderr.strip()[-200:]}"))
+    print(f"{len(kept)} provisioned checkout(s) are stated by a step")
 
 
 def pages(want=None):
