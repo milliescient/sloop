@@ -5,7 +5,7 @@ A page declares named steps in its header:
     steps:
       simulate:
         cmd: ./simulate.sh
-        uses: simfbd@2ac91ba          # runs this, which must be at this version
+        uses: simfbdr@2ac91ba          # runs this, which must be at this version
         frozen: true                  # runs only when named, never overwrites without --force
         outputs: [sbc/thin/specimens_thinned]
       summarize:
@@ -107,7 +107,7 @@ class Hasher:
     def digest(self, path, fresh=False):
         """A stable hash of a file, or of every file under a directory: SHA-1 over one line
         per file, its relative name and the SHA-1 of its bytes, files in sorted order, first
-        12 hex digits. simfbd's bin/manifest.py computes the same thing, on purpose, so a
+        12 hex digits. simfbdr's bin/manifest.py computes the same thing, on purpose, so a
         path hashes alike in a page's lock and a batch's manifest."""
         path = Path(path)
         base = path if path.is_dir() else path.parent
@@ -301,8 +301,20 @@ def read_lock(page_dir):
         doc = {}
     except yaml.YAMLError as e:
         raise SystemExit(f"{page_dir.name}: {LOCK} is not valid YAML\n  {e}")
-    return {"steps": doc.get("steps") or {}, "checks": doc.get("checks") or {},
-            "accepted": doc.get("accepted") or [], "provisional": doc.get("provisional") or []}
+    steps, accepted = doc.get("steps") or {}, doc.get("accepted") or []
+    # a record made under a dependency's former name is read under the one it has now
+    for rec in steps.values():
+        if rec.get("uses"):
+            rec["uses"] = [D.current(u) for u in rec["uses"]]
+        for path, made in (rec.get("made_with") or {}).items():
+            rec["made_with"][path] = [D.current(u) for u in made]
+    for a in accepted:
+        if isinstance(a.get("uses"), list):
+            a["uses"] = [D.current(u) for u in a["uses"]]
+        elif a.get("uses"):
+            a["uses"] = D.current(a["uses"])
+    return {"steps": steps, "checks": doc.get("checks") or {},
+            "accepted": accepted, "provisional": doc.get("provisional") or []}
 
 
 def write_lock(plan, lock):
@@ -611,7 +623,7 @@ MANIFEST = "manifest.yml"
 def manifest_uses(at, root):
     """What the nearest manifest.yml at or above a path says made it, as name@version, or [].
 
-    A tool that makes data can pick its own tools: simfbd fits a run with the build of rb the
+    A tool that makes data can pick its own tools: simfbdr fits a run with the build of rb the
     run's config states, which need not be the one a page's own scripts would find. Its
     manifest says which it was, in the form a step's `uses` has, so a page can show it. A
     manifest with entries, each with its own `uses`, gives all of them.
@@ -628,7 +640,7 @@ def manifest_uses(at, root):
             found = doc.get("uses") or [u for e in doc.get("simulated") or [] if isinstance(e, dict)
                                         for u in e.get("uses") or []]
             found = [found] if isinstance(found, str) else found
-            return list(dict.fromkeys(str(u) for u in found if re.fullmatch(r"[^@\s]+@\S+", str(u))))
+            return list(dict.fromkeys(D.current(u) for u in found if re.fullmatch(r"[^@\s]+@\S+", str(u))))
         if d == root or d == d.parent:
             return []
         d = d.parent

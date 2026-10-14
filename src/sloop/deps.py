@@ -3,9 +3,9 @@
 Everything is declared once, in notebook.yml:
 
     dependencies:
-      simfbd:                       # has a version command: a tool
-        url: https://github.com/you/simfbd
-        version: simfbd --version
+      simfbdr:                       # has a version command: a tool
+        url: https://github.com/you/simfbdr
+        version: simfbdr --version
       pbdb-families:                # a url and no version command: a repository checked out
         url: https://github.com/you/pbdb-families
       sbc:                          # neither: a data directory
@@ -20,18 +20,21 @@ this one, and is looked for in three places, first match winning: the environmen
 SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<name>. A tool has no path: it is
 whatever its version command finds.
 
+A renamed dependency says what it was, `formerly: old-name`, and a record made under that name
+is read under the new one.
+
 A version is compared as a string. For a repository it is the checkout's commit, and for a
 tool it is the one line its version command prints, which can be a number, a commit, anything.
 
 A tool whose version is the commit of its source can be provisioned:
 
-      simfbd:
-        url: https://github.com/you/simfbd
-        version: simfbd --version
+      simfbdr:
+        url: https://github.com/you/simfbdr
+        version: simfbdr --version
         provision: worktree                       # check out the commit a step states
         provides: {PATH: bin, PYTHONPATH: src}    # and put these of its directories first
 
-A step that states simfbd@1616e09 is then run against a git worktree of that commit, made
+A step that states simfbdr@1616e09 is then run against a git worktree of that commit, made
 from the tool's own checkout (found as a repository's is) and kept under <checkouts>/.sloop.
 So two steps can state two commits of one tool, and neither moves the checkout you work in.
 The version command is run with the same directories first, and still has to print the
@@ -42,7 +45,7 @@ import re
 import subprocess
 from pathlib import Path
 
-FIELDS = {"url", "version", "path", "provision", "provides"}
+FIELDS = {"url", "version", "path", "provision", "provides", "formerly"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
@@ -84,10 +87,26 @@ def read(raw, where):
         if kind == "tool" and d.get("path") and not provision:
             raise SystemExit(f"{where}: {name} is a tool, which has no path: it is whatever "
                              f"its version command finds")
+        formerly = d.get("formerly") or []
+        formerly = [formerly] if isinstance(formerly, str) else list(formerly)
         out[str(name)] = {"url": (d.get("url") or "").strip(), "version": d.get("version"),
                           "path": d.get("path"), "kind": kind, "provision": provision,
-                          "provides": {str(k): str(v) for k, v in provides.items()}}
+                          "provides": {str(k): str(v) for k, v in provides.items()},
+                          "formerly": [str(f) for f in formerly]}
+    for name, d in out.items():
+        for old in d["formerly"]:
+            if old in out or sum(old in e["formerly"] for e in out.values()) > 1:
+                raise SystemExit(f"{where}: {name} was formerly {old}, which names another dependency")
     return out
+
+
+def current(use, deps=None):
+    """A name, or a name@version, under the name its dependency has now."""
+    name, at, ver = str(use).partition("@")
+    for now, dep in (DEPS if deps is None else deps).items():
+        if name in dep.get("formerly", ()):
+            return now + at + ver
+    return str(use)
 
 
 def merged(page_deps, page):
