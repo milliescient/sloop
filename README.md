@@ -112,7 +112,7 @@ A step that states `simfbd@1616e09` is then run against a git worktree of that c
 `<checkouts>/.sloop/simfbd/`. That checkout is found as a repository's is. `provides` names
 the directories of the worktree to put first on each variable, and one a commit does not have
 is left out. The version command is run the same way and still has to print the stated commit,
-so a `provides` that does not reach the worktree is refused, not trusted. Two steps can state
+so a `provides` that does not reach the worktree is refused. Two steps can state
 two commits of one tool, and the checkout you work in is never moved. The command also
 receives the worktree as `$<NAME>`. `sloop prune` removes the worktrees no step states any
 more. A commit the checkout does not have is refused: fetch it. A version that is not a
@@ -183,10 +183,10 @@ its header. That is shown and never enforced.
 ### The record
 
 `sloop make` writes `page.lock` beside the page: for each step, the versions it ran and the
-hash of every path it read and wrote. It is committed, and it is what a review reads.
+hash of every path it read and wrote. It is committed.
 
-A tool that makes data may pick its own tools, as simfbd picks the build of rb that fits a
-run. Where a path a step reads or writes has a `manifest.yml` at or above it with a `uses`
+A tool that makes data may pick its own tools, as simfbd picks the build of rb that analyzes
+a run. Where a path a step reads or writes has a `manifest.yml` at or above it with a `uses`
 list of `name@version`, the lock copies the list under `made_with`, and the provenance block
 shows it under the step's `uses`, each name linked through its entry in `dependencies`. It says what
 ran there and is never compared with what is installed here.
@@ -206,14 +206,14 @@ A step is then one of
 | unrecorded | its outputs are there, and nothing says how they got there |
 | current | none of those |
 
-A stale step that is not frozen is simply rerun. What is not supposed to change underneath a
-page is refused instead: an input that lives in a dependency and that no step here writes,
+A stale step that is not frozen is rerun. What is not supposed to change underneath a page is
+refused: an input that lives in a dependency and that no step here writes,
 the output of a frozen step, a version. `sloop accept PAGE WHAT -m "why"` writes down that
 the change was meant, in the lock, with the reason.
 
 `sloop freeze PAGE STEP` records a step as it stands without running it, for work done
-outside sloop, such as a fit started on a cluster. It is the one place sloop takes your
-word, so it is only for what cannot be cheaply rerun.
+outside sloop, such as an analysis started on a cluster. Nothing checks what a frozen step
+ran, so it is only for what cannot be cheaply rerun.
 
 A check is a command of a line or two with the answer the page expects. Its definition is
 hashed into the lock, so an edited check shows in the diff.
@@ -227,11 +227,10 @@ ignored by git, so a directory of ten thousand logs is not read again on every s
 A page that reads the output of a step with no record, or whose quick step ran on
 uncommitted code, is provisional: the lock says why, the page carries a banner, and
 `sloop build --no-drafts` fails on it unless it is marked `draft: true`. Nothing clears that
-by hand. A frozen step refuses to run on uncommitted code at all, because a result that took
-weeks could then never be traced to what made it.
+by hand. A frozen step refuses to run on uncommitted code at all.
 
-So results can be watched as they come in: with a fit running, `sloop make PAGE` skips it and
-reruns the summary against the logs that exist, as often as you like.
+Results can be watched as they come in. With an analysis running, `sloop make PAGE` skips it
+and reruns the summary against the logs that exist.
 
 ### Writing
 
