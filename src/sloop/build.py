@@ -387,7 +387,15 @@ def library_markup():
     order = sorted(refs, key=lambda k: (str(refs[k].get("year") or ""), k), reverse=True)
     # the notebook's own reading order. A key left out of it still shows, under Elsewhere,
     # so an import is never hidden by not having been curated yet
-    conf = CONF.get("library") or {}
+    # the order lives beside the papers, not in notebook.yml: nothing under library/ is
+    # tracked, so the curation travels with the thing it curates
+    conf = {}
+    ordering = lib / "order.yml"
+    if ordering.is_file():
+        try:
+            conf = yaml.safe_load(ordering.read_text()) or {}
+        except yaml.YAMLError as e:
+            raise SystemExit(f"library/order.yml is not valid YAML\n  {e}")
     start = set(conf.get("start") or [])
     rows, placed = "", set()
     for g in conf.get("groups") or []:
