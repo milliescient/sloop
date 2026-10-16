@@ -1131,7 +1131,8 @@ STYLE = r"""
     margin-left:var(--s1); }
   .editbtn:hover { border-color:var(--accent); }
   /* the clipboard beside a shared page's unshare button */
-  .sharecopy { padding:.18em .4em; line-height:0; vertical-align:middle; }
+  .shareset { display:inline-block; white-space:nowrap; }
+  .sharecopy { padding:.18em .4em; line-height:0; vertical-align:middle; margin-left:.35em; }
   .sharecopy svg { display:block; }
   .sharecopy.done { color:var(--ink); border-color:var(--ink); }
   dialog.editor { width:min(64rem, calc(100vw - 2rem)); height:calc(100vh - 3rem); max-height:none;
@@ -1504,7 +1505,10 @@ APP = r"""(function () {
         var sh = document.createElement("button");
         sh.type = "button"; sh.className = "editbtn sharebtn"; sh.textContent = "share";
         sh.addEventListener("click", function () { toggleShare(el); });
-        label.appendChild(sh);
+        var set = document.createElement("span");    /* so unshare and its clipboard wrap as one */
+        set.className = "shareset";
+        set.appendChild(sh);
+        label.appendChild(set);
         shareState(el);
       });
     }
