@@ -474,7 +474,7 @@ def build(site=None, drafts=True):
         f'<div id="pane" data-term="{html.escape(str(term["url"])) if term else ""}">'
         '<div id="termbody"></div>'
         '<div id="libwrap"><div id="notesbar"><span id="notestitle"></span>'
-        '<a id="notesback" href="#/library" title="back to the papers">&#8592;</a></div>'
+        '<button id="notesback" title="back to the papers">&#8592;</button></div>'
         f'<div id="libbody">{LIB}<div id="notesbody"></div></div></div></div>'
         '<div id="panesplit" role="separator" tabindex="0" aria-label="resize"></div>'
         '<div id="paperwrap"><iframe id="paper" title="paper"></iframe></div>')
@@ -665,7 +665,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   #notesbar { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between;
     gap:var(--s2); padding:var(--s2) var(--s3) var(--s1); border-bottom:1px solid var(--rule); }
   #notestitle { font-family:var(--mono); font-size:.68rem; letter-spacing:.06em; color:var(--muted); }
-  #notesback { color:var(--muted); text-decoration:none; font-size:.9rem; }
+  #notesback { border:0; background:none; padding:0; cursor:pointer;
+    color:var(--muted); font-size:.9rem; line-height:1; }
   #notesback:hover { color:var(--accent); }
   #libbody { flex:1; min-height:0; overflow-y:auto; padding:var(--s2) var(--s3) var(--s4);
     font-size:.92rem; color:var(--ink); }
@@ -1294,6 +1295,7 @@ $rail
     document.getElementById("notestitle").textContent = src.dataset.title || key;
     paper.src = "library/pdf/" + encodeURIComponent(key) + ".pdf";
     body.classList.add("libview", "paperview");
+    set("sloop.libview", "1");
     setOpen(true, false);                 /* a paper arrives with its notes beside it */
     return true;
   }
@@ -1306,51 +1308,75 @@ $rail
         String(own === "#/library" ? /^#\/(library|paper\/)/.test(h) : h === own));
     });
   }
+  /* The library is a state of the pane, not a route: navigating the notebook must not close
+     it, and closing it must not move the notebook. Only a paper is a route, because a paper
+     takes over the main area. */
   var want = null;                        /* a doi waiting for the list to come up */
+  var backTo = "#/";                      /* where the notebook was before a paper took over */
+
+  function primeBox() {
+    if (!want) return;
+    var box = document.getElementById("libdoi"), say = document.getElementById("libsay");
+    if (box) {
+      box.value = want.doi;
+      if (say) {
+        say.className = "libsay";
+        say.textContent = want.doi
+          ? "no pdf for " + want.key + ". Its doi is in the box, or add the pdf."
+          : "no pdf for " + want.key + ", and no doi on record.";
+      }
+      if (want.doi) box.focus();
+    }
+    want = null;
+  }
+
+  function setLib(open) {
+    body.classList.toggle("libview", open);
+    set("sloop.libview", open ? "1" : "0");
+    if (open) { setOpen(true, false); primeBox(); }
+    else if (body.classList.contains("paperview")) location.hash = backTo;
+    if (!open && body.classList.contains("paneopen")) ensureTerm();
+    reflect();
+  }
+
+  var routes = [].slice.call(rail.querySelectorAll(".routebtn"));
+  function reflect() {
+    var h = location.hash || "";
+    routes.forEach(function (b) {
+      var own = b.dataset.hash;
+      b.setAttribute("aria-pressed",
+        String(own === "#/library" ? body.classList.contains("libview") : h === own));
+    });
+  }
+
   function view() {
     var h = location.hash || "";
     var m = h.match(/^#\/paper\/(.+)$/);
+    if (!m) backTo = h || "#/";           /* the last place the notebook was */
     if (m && showPaper(decodeURIComponent(m[1]))) { reflect(); return; }
     paper.removeAttribute("src");
     body.classList.remove("paperview");
     if (m) {
-      /* cited but not on disk: open the list with its doi ready to act on */
+      /* cited but not on disk: show the list with its doi ready to act on */
       var src = document.getElementById("pn-" + decodeURIComponent(m[1]));
       want = { key: decodeURIComponent(m[1]), doi: src ? (src.dataset.doi || "") : "" };
+      location.hash = backTo;             /* the notebook stays where it was */
+      setLib(true);
+      return;
     }
-    if (/^#\/library\/?$/.test(h) || m) {
-      body.classList.add("libview");      /* the list, with nothing chosen yet */
-      setOpen(true, false);
-      if (m) { location.hash = "#/library"; }
-      if (want) {
-        var box = document.getElementById("libdoi"), say = document.getElementById("libsay");
-        if (box) {
-          box.value = want.doi;
-          if (say) {
-            say.className = "libsay";
-            say.textContent = want.doi
-              ? "no pdf for " + want.key + ". Its doi is in the box, or add the pdf."
-              : "no pdf for " + want.key + ", and no doi on record.";
-          }
-          if (want.doi) box.focus();
-        }
-        want = null;
-      }
-    } else {
-      body.classList.remove("libview");
-      want = null;
-    }
-    /* the pane can be opened while the library holds it, so the terminal is built whenever
-       the notebook view actually has the pane rather than only when it opens it */
     if (body.classList.contains("paneopen") && !body.classList.contains("libview")) ensureTerm();
     reflect();
   }
+
   routes.forEach(function (b) {
     b.addEventListener("click", function () {
-      var want = b.dataset.hash;
-      location.hash = /^#\/(library|paper\/)/.test(location.hash || "") && want === "#/library"
-        ? "#/" : (location.hash === want ? "#/" : want);
-      setTimeout(function () { view(); focusTerm(); }, 30);
+      if (b.dataset.hash === "#/library") {
+        setLib(!body.classList.contains("libview"));
+        if (!body.classList.contains("libview")) focusTerm();
+        return;
+      }
+      var to = b.dataset.hash;            /* an ordinary page, which leaves the pane alone */
+      location.hash = location.hash === to ? "#/" : to;
     });
   });
   addEventListener("hashchange", view);
@@ -1395,8 +1421,13 @@ $rail
   addEventListener("pointermove", function (ev) { if (on && !ev.buttons) stop(); });
   document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); });
 
-  view();
+  document.getElementById("notesback").addEventListener("click", function () {
+    location.hash = backTo;               /* the paper closes, the list stays */
+  });
+
   if (get("sloop.paneopen") === "1") setOpen(true, false);
+  if (get("sloop.libview") === "1") body.classList.add("libview");
+  view();
 })();
 </script>
 <script>
