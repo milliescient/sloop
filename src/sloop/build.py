@@ -33,6 +33,7 @@ mount path, and the script makes them absolute once it runs.
 """
 import json
 import shutil
+import tempfile
 import html
 import re
 import subprocess
@@ -488,7 +489,7 @@ def shell(depth, title, main, shared):
     """
     root = "../" * depth or "./"
     page = (MARKUP
-            .replace("@@RAIL@@", shared["rail"])
+            .replace("@@RAIL@@", "<!--chrome-->" + shared["rail"] + "<!--/chrome-->")
             .replace("@@TITLE@@", html.escape(TITLE))
             .replace("@@LATEST@@", shared["latest"])
             .replace("@@N@@", str(shared["n"]))
@@ -505,7 +506,48 @@ def shell(depth, title, main, shared):
             + f'<link rel="stylesheet" href="{root}assets/style.css">\n</head>\n'
             + f'<body data-root="{root}">\n'
             + page
-            + f'<script src="{root}assets/app.js"></script>\n</body>\n</html>\n')
+            + f'<!--chrome--><script src="{root}assets/app.js"></script><!--/chrome-->\n</body>\n</html>\n')
+
+
+EXPORT_STYLE = """
+  /* exported: no rail, no pane, no filters, so the shell is one column */
+  body { padding-left:0 !important; }
+  .shell, .topbar .inner { grid-template-columns:minmax(0,1fr) !important; }
+  .topbar .head { grid-column:auto !important; }
+"""
+
+
+def export(slug, out=None):
+    """One entry as one file, to send to someone.
+
+    The stylesheet is inlined and the chrome stripped: no rail, no pane, no filters, no
+    script, since none of them mean anything away from the server. A citation is sent to
+    its doi, and a link to another page or to the contents is left as text, because the
+    file travels alone.
+    """
+    if not (PAGES / slug).is_dir():
+        raise SystemExit(f"no page {slug}")
+    with tempfile.TemporaryDirectory() as tmp:
+        build(Path(tmp))
+        text = (Path(tmp) / slug / "index.html").read_text()
+    text = re.sub(r"<!--chrome-->.*?<!--/chrome-->", "", text, flags=re.S)
+    text = re.sub(r'<link rel="stylesheet" href="[^"]*assets/style.css">',
+                  lambda m: "<style>" + STYLE + EXPORT_STYLE + "</style>", text, count=1)
+    refs = BIB.load()
+
+    def inert(m):
+        tag = m.group(0)
+        rl = re.search(r'data-rootlink="([^"]*)"', tag).group(1)
+        tag = re.sub(r'\s(?:href|data-rootlink)="[^"]*"', "", tag)
+        key = rl[len("library/"):].rstrip("/") if rl.startswith("library/") else None
+        doi = (refs.get(key) or {}).get("doi") if key else None
+        if doi:
+            tag = tag[:-1] + f' href="https://doi.org/{html.escape(str(doi))}" rel="noreferrer">'
+        return tag
+    text = re.sub(r'<a\s[^>]*data-rootlink="[^"]*"[^>]*>', inert, text)
+    out = Path(out) if out else Path.cwd() / f"{slug}.html"
+    out.write_text(text)
+    print(f"  wrote {out}  {out.stat().st_size // 1024} KB")
 
 
 def emit_site(pages, site):
@@ -1088,7 +1130,7 @@ MARKUP = r"""@@RAIL@@
 </header>
 
 <div class="shell">
-  <aside class="side">
+  <!--chrome--><aside class="side">
     @@SCRATCH@@
     <div class="filterhead">
       <p class="label">Tags</p>
@@ -1097,16 +1139,16 @@ MARKUP = r"""@@RAIL@@
     <div class="filters">@@FILTERS@@</div>
     <p class="label datehead">Dates</p>
     <div class="filters">@@DATES@@</div>
-  </aside>
+  </aside><!--/chrome-->
 
   <main class="main" id="main">
 @@MAIN@@
   </main>
 
-  <aside class="side right">
+  <!--chrome--><aside class="side right">
     <p class="label">Sources</p>
     <div class="sources">@@SOURCES@@</div>
-  </aside>
+  </aside><!--/chrome-->
 </div>
 </div>
 """

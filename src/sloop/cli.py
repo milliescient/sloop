@@ -14,6 +14,7 @@ Every path comes from the notebook being built, not from where the builder is in
     sloop new NAME ["A title"]          # scaffold a page
     sloop init [DIR]                    # start a notebook here
     sloop pack OUT.pyz                  # pack the builder into one file for deployment
+    sloop export PAGE [-o FILE]         # one page as one self-contained file, to send
 
 The notebook is the directory holding notebook.yml: --dir, else $NOTEBOOK_DIR, else the
 nearest one at or above the working directory, so the commands work from inside a page.
@@ -71,7 +72,7 @@ def start(where):
 
 
 COMMANDS = ("build", "serve", "status", "make", "freeze", "unfreeze", "accept", "prune", "cite",
-            "new", "init", "pack")
+            "new", "init", "pack", "export")
 
 
 def cite(conf, doi):
@@ -206,6 +207,10 @@ def main(argv=None):
     i = sub.add_parser("init", help="start a notebook in a directory")
     i.add_argument("where", nargs="?")
 
+    x = sub.add_parser("export", parents=[common], help="one page as one self-contained file")
+    x.add_argument("page", help="the page directory, e.g. pooling-age-draws")
+    x.add_argument("-o", "--out", help="where to write it (default: <page>.html here)")
+
     k = sub.add_parser("pack", help="pack the builder into one executable file")
     k.add_argument("out", nargs="?", default="sloop.pyz")
 
@@ -225,6 +230,9 @@ def main(argv=None):
     if a.cmd == "build":
         out = Path(a.out).expanduser().resolve() if a.out else None
         builder.build(out, drafts=not a.no_drafts)
+        return
+    if a.cmd == "export":
+        builder.export(a.page, Path(a.out).expanduser().resolve() if a.out else None)
         return
     if a.cmd == "status":
         results = [locker.status(d, fresh=a.rehash) for d in locker.pages(a.page)]

@@ -28,6 +28,7 @@ That puts `sloop` on the path, with `notebook` as an alias.
     sloop init my-notebook              # notebook.yml and pages/
     sloop new starving-column "A title" # a page, dated
     sloop build                         # render it into site/, a page per entry
+    sloop export PAGE [-o FILE]         # one page as one file, to send to someone
     sloop serve                         # build, serve on localhost, rebuild as pages change
     sloop status [PAGE]                 # where each step stands; runs checks and no steps
     sloop make PAGE [STEP]              # run what is stale, in order; a frozen step only by name
