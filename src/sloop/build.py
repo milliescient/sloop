@@ -571,9 +571,9 @@ def share(slug):
     export(slug, d / "index.html")
     (d / "page").write_text(f"{slug}\n{time.strftime('%Y-%m-%d %H:%M')}\n")
     base = str(CONF["share"].get("url") or "").rstrip("/")
-    print(f"  {base}/{token}/" if base
-          else f"  share/{token}/  (set share.url in notebook.yml to print the link)")
-    return token
+    url = f"{base}/{token}/" if base else ""
+    print(f"  {url}" if url else f"  share/{token}/  (set share.url in notebook.yml to print the link)")
+    return token, url
 
 
 def shares():
@@ -1130,6 +1130,10 @@ STYLE = r"""
     border:1px solid var(--rule); border-radius:2px; padding:.18em .5em; cursor:pointer;
     margin-left:var(--s1); }
   .editbtn:hover { border-color:var(--accent); }
+  /* the link a page is shared at, under its label */
+  .sharerow { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s2);
+    font-family:var(--mono); font-size:.66rem; margin:.2rem 0 var(--s1); }
+  .sharerow a { color:var(--accent); word-break:break-all; }
   dialog.editor { width:min(64rem, calc(100vw - 2rem)); height:calc(100vh - 3rem); max-height:none;
     padding:0; border:1px solid var(--rule); border-radius:2px; background:var(--panel);
     color:var(--ink); }
@@ -1438,14 +1442,74 @@ APP = r"""(function () {
         })
         .catch(function (e) { status("not saved: " + String(e.message || e), true); });
     }
+    /* ---- sharing: a page at a link that can be taken back ---- */
+    function shareRow(el) {
+      var r = el.querySelector(".sharerow");
+      if (!r) {
+        r = document.createElement("div"); r.className = "sharerow"; r.hidden = true;
+        el.querySelector(".label").insertAdjacentElement("afterend", r);
+      }
+      return r;
+    }
+    function showShare(el, sh) {
+      var r = shareRow(el), b = el.querySelector(".sharebtn");
+      if (!sh) { r.innerHTML = ""; r.hidden = true; if (b) b.textContent = "share"; return; }
+      r.hidden = false;
+      r.innerHTML = '<a class="sharelink" target="_blank" rel="noreferrer"></a>' +
+        '<button type="button" class="editbtn sharecopy">copy</button>' +
+        '<button type="button" class="editbtn shareoff">unshare</button>';
+      var a = r.querySelector(".sharelink");
+      a.textContent = sh.url || ("share/" + sh.token + "/  (no share.url configured)");
+      if (sh.url) a.href = sh.url;
+      r.querySelector(".sharecopy").addEventListener("click", function () {
+        var me = this;
+        if (!navigator.clipboard || !sh.url) return;
+        navigator.clipboard.writeText(sh.url).then(function () { me.textContent = "copied"; });
+      });
+      r.querySelector(".shareoff").addEventListener("click", function () {
+        fetch(MOUNT + "shares/" + encodeURIComponent(el.id), { method: "DELETE" })
+          .then(function (x) { if (x.ok) showShare(el, null); });
+      });
+      if (b) b.textContent = "shared";
+    }
+    function shareState(el) {
+      fetch(MOUNT + "shares", { cache: "no-store" })
+        .then(function (x) { return x.json(); })
+        .then(function (j) {
+          var mine = (j.shares || []).filter(function (x) { return x.page === el.id; })[0];
+          showShare(el, mine || null);
+        })
+        .catch(function () {});
+    }
+    function share(el) {
+      var b = el.querySelector(".sharebtn");
+      b.textContent = "sharing";
+      fetch(MOUNT + "shares/" + encodeURIComponent(el.id), { method: "POST" })
+        .then(function (x) { return x.json().then(function (j) { return [x.ok, j]; }); })
+        .then(function (res) {
+          if (!res[0]) throw new Error(res[1].error);
+          showShare(el, res[1]);
+        })
+        .catch(function (e) { b.textContent = "share"; alert(String(e.message || e)); });
+    }
+
     function wire() {
       [].forEach.call(document.querySelectorAll("#main .entry[id]"), function (el) {
         if (el.querySelector(".editbtn")) return;
+        var label = el.querySelector(".label");
+        if (!label) return;
         var b = document.createElement("button");
         b.type = "button"; b.className = "editbtn"; b.textContent = "edit";
         b.addEventListener("click", function () { open(el.id); });
-        var label = el.querySelector(".label");
-        if (label) label.appendChild(b);
+        label.appendChild(b);
+        var sh = document.createElement("button");
+        sh.type = "button"; sh.className = "editbtn sharebtn"; sh.textContent = "share";
+        sh.addEventListener("click", function () {
+          if (sh.textContent === "shared") { shareRow(el).hidden = !shareRow(el).hidden; return; }
+          share(el);
+        });
+        label.appendChild(sh);
+        shareState(el);
       });
     }
     editOn.then(function (ok) { if (!ok) return; wire(); hooks.push(wire); });

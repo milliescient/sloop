@@ -231,6 +231,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f.read_bytes())
             return
+        if path.rstrip("/") == "/shares":
+            return self.shares_api("GET", None)
         if path.rstrip("/") == "/live":
             return self.stream_builds()
         slug = self.edit_slug()
@@ -287,8 +289,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         spawn_librarian(key)
         return self.reply(200, {"key": key, "reading": True})
 
+    def shares_api(self, method, page):
+        """GET shares lists them; POST and DELETE shares/<page> share a page and take it back.
+        Writes, so gated like editing, and never answered through Funnel."""
+        if not self.edit or self.headers.get("Tailscale-Funnel-Request"):
+            return self.reply(404, {"error": "sharing is off"})
+        from . import build as builder
+        if method == "GET":
+            base = str(CONF["share"].get("url") or "").rstrip("/")
+            return self.reply(200, {"shares": [
+                {"token": t, "page": pg, "when": w, "url": f"{base}/{t}/" if base else ""}
+                for t, pg, w in builder.shares()]})
+        if not page or not SAFE_KEY.match(page) or not (PAGES / page).is_dir():
+            return self.reply(404, {"error": f"no page {page}"})
+        with SAVING:
+            if method == "POST":
+                token, url = builder.share(page)
+                return self.reply(200, {"token": token, "url": url, "page": page})
+            try:
+                builder.unshare(page)
+            except SystemExit as e:
+                return self.reply(404, {"error": str(e)})
+            return self.reply(200, {"page": page, "removed": True})
+
+    def do_DELETE(self):
+        p = self.path.split("?")[0]
+        if p.startswith("/shares/"):
+            return self.shares_api("DELETE", p[len("/shares/"):].strip("/"))
+        self.reply(404, {"error": "not found"})
+
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p.startswith("/shares/"):
+            return self.shares_api("POST", p[len("/shares/"):].strip("/"))
         if p == "/library/doi" or p.startswith("/library/pdf/"):
             return self.library_post(p)
         slug = self.edit_slug()
