@@ -464,12 +464,19 @@ def build(site=None, drafts=True):
         '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">'
         '<path d="M3.5 1.5 L8 6 L3.5 10.5" stroke="currentColor" stroke-width="1.6"'
         ' stroke-linecap="round" stroke-linejoin="round"/></svg></button>'
-        + ('<button class="routebtn" id="libbtn" aria-pressed="false" data-hash="#/library"'
-           ' title="library">library</button>' if LIB else "")
+        + '<div id="nav" role="radiogroup" aria-label="pane">'
+        '<button class="navbtn" id="navnotebook" role="radio" aria-checked="true"'
+        ' data-view="notebook" title="notebook">notebook</button>'
         + "".join(
-            f'<button class="routebtn" aria-pressed="false" data-hash="#/entry/{html.escape(e["slug"])}"'
-            f' title="{html.escape(e["title"])}">{html.escape(e["title"].lower())}</button>'
+            f'<button class="scratchbtn" data-slug="{html.escape(e["slug"])}"'
+            f' aria-pressed="false" title="{html.escape(e["title"])}">'
+            '<svg viewBox="0 0 10 10" width="8" height="8" aria-hidden="true">'
+            '<rect x="1.2" y="1.2" width="7.6" height="7.6" rx="1.4" fill="none"'
+            ' stroke="currentColor" stroke-width="1.4"/></svg></button>'
             for e in recent if e["scratch"])
+        + ('<button class="navbtn" id="navlibrary" role="radio" aria-checked="false"'
+           ' data-view="library" title="library">library</button>' if LIB else "")
+        + '</div>'
         + '</div>'
         f'<div id="pane" data-term="{html.escape(str(term["url"])) if term else ""}">'
         '<div id="termbody"></div>'
@@ -648,11 +655,15 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   #rail button:hover, #rail button:focus-visible { color:#ede7dc; outline:0; }
   #panebtn svg { display:block; transition:transform .22s ease; }
   body.paneopen #panebtn svg { transform:rotate(180deg); }
-  #rail .routebtn { font-family:var(--mono); font-size:.62rem; letter-spacing:.08em;
+  #nav { margin-top:auto; padding-bottom:12px; display:flex; flex-direction:column;
+    align-items:center; width:100%; }
+  #rail .navbtn { font-family:var(--mono); font-size:.62rem; letter-spacing:.08em;
     writing-mode:vertical-rl; padding:7px 0; }
-  #rail .routebtn[aria-pressed="true"] { color:#ede7dc; }
-  #rail .routebtn:first-of-type { margin-top:auto; }
-  #rail .routebtn:last-of-type { padding-bottom:12px; }
+  #rail .navbtn[aria-checked="true"] { color:#ede7dc; }
+  /* scratch belongs to the notebook, so it sits under it and is not one of the two views */
+  #rail .scratchbtn { width:auto; padding:3px 0 7px; color:#4f4a40; }
+  #rail .scratchbtn[aria-pressed="true"] { color:var(--accent, #d4714c); }
+  #rail .scratchbtn svg { display:block; }
 
   #pane { position:fixed; left:var(--rail); top:0; bottom:0; width:0; z-index:65;
     overflow:hidden; background:var(--shellbg); visibility:hidden; }
@@ -1299,15 +1310,6 @@ $rail
     setOpen(true, false);                 /* a paper arrives with its notes beside it */
     return true;
   }
-  var routes = [].slice.call(rail.querySelectorAll(".routebtn"));
-  function reflect() {
-    var h = location.hash || "";
-    routes.forEach(function (b) {
-      var own = b.dataset.hash;
-      b.setAttribute("aria-pressed",
-        String(own === "#/library" ? /^#\/(library|paper\/)/.test(h) : h === own));
-    });
-  }
   /* The library is a state of the pane, not a route: navigating the notebook must not close
      it, and closing it must not move the notebook. Only a paper is a route, because a paper
      takes over the main area. */
@@ -1339,13 +1341,18 @@ $rail
     reflect();
   }
 
-  var routes = [].slice.call(rail.querySelectorAll(".routebtn"));
+  /* Two views, exactly one of them on: notebook puts the terminal in the pane, library puts
+     the papers there. Scratch is not one of them, it only moves the notebook. */
+  var navs = [].slice.call(rail.querySelectorAll(".navbtn"));
+  var scratches = [].slice.call(rail.querySelectorAll(".scratchbtn"));
   function reflect() {
+    var lib = body.classList.contains("libview");
+    navs.forEach(function (b) {
+      b.setAttribute("aria-checked", String((b.dataset.view === "library") === lib));
+    });
     var h = location.hash || "";
-    routes.forEach(function (b) {
-      var own = b.dataset.hash;
-      b.setAttribute("aria-pressed",
-        String(own === "#/library" ? body.classList.contains("libview") : h === own));
+    scratches.forEach(function (b) {
+      b.setAttribute("aria-pressed", String(h === "#/entry/" + b.dataset.slug));
     });
   }
 
@@ -1355,7 +1362,7 @@ $rail
     if (!m) backTo = h || "#/";           /* the last place the notebook was */
     if (m && showPaper(decodeURIComponent(m[1]))) { reflect(); return; }
     paper.removeAttribute("src");
-    body.classList.remove("paperview");
+    body.classList.remove("paperview");   /* the list comes back, not stale notes */
     if (m) {
       /* cited but not on disk: show the list with its doi ready to act on */
       var src = document.getElementById("pn-" + decodeURIComponent(m[1]));
@@ -1368,14 +1375,17 @@ $rail
     reflect();
   }
 
-  routes.forEach(function (b) {
+  navs.forEach(function (b) {
     b.addEventListener("click", function () {
-      if (b.dataset.hash === "#/library") {
-        setLib(!body.classList.contains("libview"));
-        if (!body.classList.contains("libview")) focusTerm();
-        return;
-      }
-      var to = b.dataset.hash;            /* an ordinary page, which leaves the pane alone */
+      var lib = b.dataset.view === "library";
+      if (lib === body.classList.contains("libview")) { setOpen(true); return; }
+      setLib(lib);                        /* leaving the library also closes any paper */
+      if (!lib) focusTerm();
+    });
+  });
+  scratches.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var to = "#/entry/" + b.dataset.slug;
       location.hash = location.hash === to ? "#/" : to;
     });
   });
