@@ -326,7 +326,9 @@ class Page:
         def cite(key, how):
             if key not in self.cited:
                 self.cited.append(key)
-            href = f'href="#{self.slug}-ref-{html.escape(key)}" data-xref="{self.slug}-ref-{html.escape(key)}"'
+            # a citation goes to the paper in the library, not to the reference list at the
+            # foot of the page: the library is where the pdf and the notes are
+            href = f'href="#/paper/{html.escape(key)}"'
             if how == "text":
                 return f'<a class="cite" {href}>{html.escape(self.bib.names(key))} ({self.bib.year(key)})</a>'
             return f'<a class="cite" {href}>{html.escape(self.bib.names(key))} {self.bib.year(key)}</a>'

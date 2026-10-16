@@ -387,7 +387,8 @@ def library_markup():
     # every paper's notes, kept out of the flow: the notes panel shows one at a time
     store = "".join(
         f'<div class="papernotes" id="pn-{html.escape(k)}" data-title="{html.escape(BIB.names(k))} '
-        f'{html.escape(BIB.year(k))}" data-pdf="{"1" if k in pdfs else ""}">{notes_html(k)}</div>'
+        f'{html.escape(BIB.year(k))}" data-pdf="{"1" if k in pdfs else ""}" '
+        f'data-doi="{html.escape(str((refs.get(k) or {}).get("doi") or ""))}">{notes_html(k)}</div>'
         for k in order)
     n_pdf = len(pdfs & set(refs))
     up = ('<svg viewBox="0 0 14 14" width="13" height="13" fill="none" aria-hidden="true">'
@@ -1305,18 +1306,39 @@ $rail
         String(own === "#/library" ? /^#\/(library|paper\/)/.test(h) : h === own));
     });
   }
+  var want = null;                        /* a doi waiting for the list to come up */
   function view() {
     var h = location.hash || "";
     var m = h.match(/^#\/paper\/(.+)$/);
     if (m && showPaper(decodeURIComponent(m[1]))) { reflect(); return; }
     paper.removeAttribute("src");
     body.classList.remove("paperview");
+    if (m) {
+      /* cited but not on disk: open the list with its doi ready to act on */
+      var src = document.getElementById("pn-" + decodeURIComponent(m[1]));
+      want = { key: decodeURIComponent(m[1]), doi: src ? (src.dataset.doi || "") : "" };
+    }
     if (/^#\/library\/?$/.test(h) || m) {
       body.classList.add("libview");      /* the list, with nothing chosen yet */
       setOpen(true, false);
-      if (m) location.hash = "#/library";
+      if (m) { location.hash = "#/library"; }
+      if (want) {
+        var box = document.getElementById("libdoi"), say = document.getElementById("libsay");
+        if (box) {
+          box.value = want.doi;
+          if (say) {
+            say.className = "libsay";
+            say.textContent = want.doi
+              ? "no pdf for " + want.key + ". Its doi is in the box, or add the pdf."
+              : "no pdf for " + want.key + ", and no doi on record.";
+          }
+          if (want.doi) box.focus();
+        }
+        want = null;
+      }
     } else {
       body.classList.remove("libview");
+      want = null;
     }
     /* the pane can be opened while the library holds it, so the terminal is built whenever
        the notebook view actually has the pane rather than only when it opens it */
