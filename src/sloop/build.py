@@ -1130,10 +1130,10 @@ STYLE = r"""
     border:1px solid var(--rule); border-radius:2px; padding:.18em .5em; cursor:pointer;
     margin-left:var(--s1); }
   .editbtn:hover { border-color:var(--accent); }
-  /* the link a page is shared at, under its label */
-  .sharerow { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s2);
-    font-family:var(--mono); font-size:.66rem; margin:.2rem 0 var(--s1); }
-  .sharerow a { color:var(--accent); word-break:break-all; }
+  /* the clipboard beside a shared page's unshare button */
+  .sharecopy { padding:.18em .4em; line-height:0; vertical-align:middle; }
+  .sharecopy svg { display:block; }
+  .sharecopy.done { color:var(--ink); border-color:var(--ink); }
   dialog.editor { width:min(64rem, calc(100vw - 2rem)); height:calc(100vh - 3rem); max-height:none;
     padding:0; border:1px solid var(--rule); border-radius:2px; background:var(--panel);
     color:var(--ink); }
@@ -1442,35 +1442,34 @@ APP = r"""(function () {
         })
         .catch(function (e) { status("not saved: " + String(e.message || e), true); });
     }
-    /* ---- sharing: a page at a link that can be taken back ---- */
-    function shareRow(el) {
-      var r = el.querySelector(".sharerow");
-      if (!r) {
-        r = document.createElement("div"); r.className = "sharerow"; r.hidden = true;
-        el.querySelector(".label").insertAdjacentElement("afterend", r);
-      }
-      return r;
-    }
+    /* ---- sharing: a page at a link that can be taken back ----
+       One button, share or unshare by state, and a clipboard beside it while shared. */
+    var CLIP = '<svg viewBox="0 0 12 12" width="11" height="11" fill="none" aria-hidden="true">' +
+      '<rect x="2.6" y="2.4" width="6.8" height="8.2" rx="1" stroke="currentColor" stroke-width="1.2"/>' +
+      '<path d="M4.4 2.4V1.5h3.2v.9" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
+      '<path d="M4.4 5.4h3.2M4.4 7.4h3.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>';
     function showShare(el, sh) {
-      var r = shareRow(el), b = el.querySelector(".sharebtn");
-      if (!sh) { r.innerHTML = ""; r.hidden = true; if (b) b.textContent = "share"; return; }
-      r.hidden = false;
-      r.innerHTML = '<a class="sharelink" target="_blank" rel="noreferrer"></a>' +
-        '<button type="button" class="editbtn sharecopy">copy</button>' +
-        '<button type="button" class="editbtn shareoff">unshare</button>';
-      var a = r.querySelector(".sharelink");
-      a.textContent = sh.url || ("share/" + sh.token + "/  (no share.url configured)");
-      if (sh.url) a.href = sh.url;
-      r.querySelector(".sharecopy").addEventListener("click", function () {
-        var me = this;
-        if (!navigator.clipboard || !sh.url) return;
-        navigator.clipboard.writeText(sh.url).then(function () { me.textContent = "copied"; });
-      });
-      r.querySelector(".shareoff").addEventListener("click", function () {
-        fetch(MOUNT + "shares/" + encodeURIComponent(el.id), { method: "DELETE" })
-          .then(function (x) { if (x.ok) showShare(el, null); });
-      });
-      if (b) b.textContent = "shared";
+      var b = el.querySelector(".sharebtn"), c = el.querySelector(".sharecopy");
+      if (!b) return;
+      if (!sh) {
+        b.textContent = "share"; b.dataset.url = ""; b.title = "share this page at a link";
+        if (c) c.remove();
+        return;
+      }
+      b.textContent = "unshare"; b.dataset.url = sh.url || ""; b.title = sh.url || "shared";
+      if (!c) {
+        c = document.createElement("button");
+        c.type = "button"; c.className = "editbtn sharecopy"; c.innerHTML = CLIP;
+        c.addEventListener("click", function () {
+          if (!navigator.clipboard || !b.dataset.url) return;
+          navigator.clipboard.writeText(b.dataset.url).then(function () {
+            c.classList.add("done"); c.title = "copied";
+            setTimeout(function () { c.classList.remove("done"); c.title = "copy the link"; }, 1500);
+          });
+        });
+        b.insertAdjacentElement("afterend", c);
+      }
+      c.title = "copy the link";
     }
     function shareState(el) {
       fetch(MOUNT + "shares", { cache: "no-store" })
@@ -1481,16 +1480,16 @@ APP = r"""(function () {
         })
         .catch(function () {});
     }
-    function share(el) {
-      var b = el.querySelector(".sharebtn");
-      b.textContent = "sharing";
-      fetch(MOUNT + "shares/" + encodeURIComponent(el.id), { method: "POST" })
+    function toggleShare(el) {
+      var b = el.querySelector(".sharebtn"), shared = b.textContent === "unshare";
+      b.textContent = shared ? "unsharing" : "sharing";
+      fetch(MOUNT + "shares/" + encodeURIComponent(el.id), { method: shared ? "DELETE" : "POST" })
         .then(function (x) { return x.json().then(function (j) { return [x.ok, j]; }); })
         .then(function (res) {
           if (!res[0]) throw new Error(res[1].error);
-          showShare(el, res[1]);
+          showShare(el, shared ? null : res[1]);
         })
-        .catch(function (e) { b.textContent = "share"; alert(String(e.message || e)); });
+        .catch(function (e) { showShare(el, null); alert(String(e.message || e)); });
     }
 
     function wire() {
@@ -1504,10 +1503,7 @@ APP = r"""(function () {
         label.appendChild(b);
         var sh = document.createElement("button");
         sh.type = "button"; sh.className = "editbtn sharebtn"; sh.textContent = "share";
-        sh.addEventListener("click", function () {
-          if (sh.textContent === "shared") { shareRow(el).hidden = !shareRow(el).hidden; return; }
-          share(el);
-        });
+        sh.addEventListener("click", function () { toggleShare(el); });
         label.appendChild(sh);
         shareState(el);
       });
