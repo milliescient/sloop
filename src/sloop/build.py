@@ -358,7 +358,7 @@ def library_markup():
             out = f'<p class="liberr">{html.escape(str(n["error"]))}</p>'
         return out or "<p>Nothing written yet.</p>"
 
-    def row(key):
+    def row(key, starred=False):
         n = notes.get(key) or {}
         has_pdf = key in pdfs
         head = (f'<a class="libpdf" href="library/pdf/{html.escape(key)}.pdf" '
@@ -375,15 +375,33 @@ def library_markup():
         if not has_pdf:
             return ""
         title = str((refs.get(key) or {}).get("title") or key)
-        return (f'<a class="librow" href="#/paper/{html.escape(key)}">'
-                f'<span class="libwho">{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}</span>'
+        return (f'<a class="librow{" start" if starred else ""}" href="#/paper/{html.escape(key)}">'
+                f'<span class="libwho">{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}'
+                + ('<span class="libstart" title="start here">&#9679;</span>' if starred else "")
+                + '</span>'
                 f'<span class="libtitle">{html.escape(title.rstrip("."))}</span>'
                 + (f'<span class="libone">{html.escape(str(n["one_line"]))}</span>' if n.get("one_line")
                    else ' <span class="libstate">unread</span>')
                 + '</a>')
 
     order = sorted(refs, key=lambda k: (str(refs[k].get("year") or ""), k), reverse=True)
-    rows = "".join(row(k) for k in order)
+    # the notebook's own reading order. A key left out of it still shows, under Elsewhere,
+    # so an import is never hidden by not having been curated yet
+    conf = CONF.get("library") or {}
+    start = set(conf.get("start") or [])
+    rows, placed = "", set()
+    for g in conf.get("groups") or []:
+        keys = [k for k in (g.get("keys") or []) if k in refs and k in pdfs]
+        if not keys:
+            continue
+        placed.update(keys)
+        rows += (f'<h3 class="libgroup">{html.escape(str(g.get("title", "")))}</h3>'
+                 + (f'<p class="libnote">{html.escape(str(g["note"]))}</p>' if g.get("note") else "")
+                 + "".join(row(k, k in start) for k in keys))
+    rest = [k for k in order if k in pdfs and k not in placed]
+    if rest:
+        rows += ('<h3 class="libgroup">Elsewhere</h3>'
+                 + "".join(row(k, k in start) for k in rest))
     # every paper's notes, kept out of the flow: the notes panel shows one at a time
     store = "".join(
         f'<div class="papernotes" id="pn-{html.escape(k)}" data-title="{html.escape(BIB.names(k))} '
@@ -705,6 +723,10 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   .libsay { font-family:var(--mono); font-size:.62rem; letter-spacing:.04em; color:var(--muted);
     margin:var(--s1) 0 0; min-height:1em; }
   .libsay.err { color:var(--oxide, var(--accent)); }
+  .libgroup { font-family:var(--mono); font-size:.64rem; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin:var(--s3) 0 .2rem; font-weight:400; }
+  .libnote { color:var(--muted); font-size:.82rem; margin:0 0 var(--s1); }
+  .libstart { color:var(--accent); font-size:.6em; vertical-align:middle; margin-left:.5em; }
   .libcount { font-family:var(--mono); font-size:.62rem; letter-spacing:.04em;
     color:var(--muted); margin:.2rem 0 var(--s2); }
   #notesbody { }

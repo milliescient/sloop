@@ -26,6 +26,7 @@ DEFAULTS = {
     # literal colours in a figure and the stylesheet variable each stands for
     "figure_colors": {},
     "serve": {"port": 8099, "edit": True, "panes": []},
+    "library": {},
 }
 
 
