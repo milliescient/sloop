@@ -516,6 +516,9 @@ EXPORT_STYLE = """
   body { padding-left:0 !important; }
   .shell, .topbar .inner { grid-template-columns:minmax(0,1fr) !important; }
   .topbar .head { grid-column:auto !important; }
+  /* one reading column, centred: the text's own measure plus the shell's padding */
+  .shell, .topbar .inner { max-width:calc(var(--measure) + 2 * var(--s3)) !important; }
+  .provenance { display:none; }
 """
 
 
@@ -533,6 +536,8 @@ def export(slug, out=None):
         build(Path(tmp))
         text = (Path(tmp) / slug / "index.html").read_text()
     text = re.sub(r"<!--chrome-->.*?<!--/chrome-->", "", text, flags=re.S)
+    # the updated stamp and the page count describe the notebook, not this page
+    text = re.sub(r'<div class="provenance">.*?</div>', "", text, count=1, flags=re.S)
     text = re.sub(r'<link rel="stylesheet" href="[^"]*assets/style.css">',
                   lambda m: "<style>" + STYLE + EXPORT_STYLE + "</style>", text, count=1)
     refs = BIB.load()
@@ -557,10 +562,12 @@ def share(slug):
 
     The page is exported under a token no one can guess, into share/, which the share
     server alone answers for and git never sees. Removing the directory is the revocation.
+    Sharing a page that is already shared refreshes it at the same link.
     """
-    token = secrets.token_urlsafe(12)
+    held = [t for t, page, _ in shares() if page == slug]
+    token = held[0] if held else secrets.token_urlsafe(12)
     d = ROOT / "share" / token
-    d.mkdir(parents=True)
+    d.mkdir(parents=True, exist_ok=True)
     export(slug, d / "index.html")
     (d / "page").write_text(f"{slug}\n{time.strftime('%Y-%m-%d %H:%M')}\n")
     base = str(CONF["share"].get("url") or "").rstrip("/")
