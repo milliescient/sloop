@@ -25,18 +25,20 @@ number cannot drift from the computation behind it: rerun the step and the prose
 `{{key}}` with no value stops the render, as does an embedded file that is missing. render.py
 has what else a page can write.
 
-Routes: #/ everything, #/tag/<tag> filtered, #/entry/<slug>.
+A conventional static site: index.html, <slug>/index.html, library/<key>/index.html,
+and assets/ beside them.
 
-Writes one self-contained page to site/index.html, which works at any mount path.
+Every link is written relative to the page's own depth, so the build works at any
+mount path, and the script makes them absolute once it runs.
 """
 import json
+import shutil
 import html
 import re
 import subprocess
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from string import Template
 
 import yaml
 
@@ -314,11 +316,11 @@ def sidebar_sources(rows):
 
 
 def library_markup():
-    """The reading library, rendered into the pane rather than into a page.
+    """The reading library.
 
-    Every key in references.bib with a pdf beside it is a paper. The pane lists them, and
-    picking one puts its notes there and its pdf in the main area. There is no bibliography
-    page: the citation list is a way to reach a paper, not somewhere to read.
+    Every key in references.bib with a pdf beside it is a paper. The pane lists them, and a
+    paper's own page puts its pdf wide with its notes lifted into the pane. A key with no
+    pdf gets a stub page that primes the import box, so a citation is never a dead link.
     """
     refs = BIB.load()
     if not refs:
@@ -350,7 +352,8 @@ def library_markup():
             out += "<h4>Connection</h4><ul>" + "".join(
                 f"<li>{html.escape(str(x))}</li>" for x in con) + "</ul>"
         for q in (n.get("quotes") or [])[:3]:
-            where = f' <span class="qwhere">{html.escape(str(q.get("where", "")))}</span>' if q.get("where") else ""
+            where = (f' <span class="qwhere">{html.escape(str(q.get("where", "")))}</span>'
+                     if q.get("where") else "")
             out += f'<blockquote>{html.escape(str(q.get("text", "")))}{where}</blockquote>'
         if n.get("status") == "reading":
             out = "<p>Being read now. This fills in when it is done.</p>"
@@ -359,36 +362,25 @@ def library_markup():
         return out or "<p>Nothing written yet.</p>"
 
     def row(key, starred=False):
-        n = notes.get(key) or {}
-        has_pdf = key in pdfs
-        head = (f'<a class="libpdf" href="library/pdf/{html.escape(key)}.pdf" '
-                f'target="_blank" rel="noreferrer">pdf</a>' if has_pdf
-                else '<span class="libpdf none">no pdf</span>')
-        one = f'<p class="libone">{html.escape(str(n["one_line"]))}</p>' if n.get("one_line") else ""
-        body = ""
-        if n.get("summary"):
-            body += f'<p>{html.escape(str(n["summary"]))}</p>'
-        for pt in (n.get("points") or [])[:8]:
-            body += f'<li>{html.escape(str(pt))}</li>'
-        if body and "<li>" in body:
-            body = body.replace("<li>", "<ul><li>", 1) + "</ul>"
-        if not has_pdf:
+        if key not in pdfs:
             return ""
+        n = notes.get(key) or {}
         title = str((refs.get(key) or {}).get("title") or key)
-        return (f'<a class="librow{" start" if starred else ""}" href="#/paper/{html.escape(key)}">'
+        k = html.escape(key)
+        return (f'<a class="librow{" start" if starred else ""}" '
+                f'href="@@ROOT@@library/{k}/" data-rootlink="library/{k}/">'
                 f'<span class="libwho">{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}'
                 + ('<span class="libstart" title="start here">&#9679;</span>' if starred else "")
                 + '</span>'
                 f'<span class="libtitle">{html.escape(title.rstrip("."))}</span>'
-                + (f'<span class="libone">{html.escape(str(n["one_line"]))}</span>' if n.get("one_line")
-                   else ' <span class="libstate">unread</span>')
+                + (f'<span class="libone">{html.escape(str(n["one_line"]))}</span>'
+                   if n.get("one_line") else ' <span class="libstate">unread</span>')
                 + '</a>')
 
     order = sorted(refs, key=lambda k: (str(refs[k].get("year") or ""), k), reverse=True)
-    # the notebook's own reading order. A key left out of it still shows, under Elsewhere,
-    # so an import is never hidden by not having been curated yet
     # the order lives beside the papers, not in notebook.yml: nothing under library/ is
-    # tracked, so the curation travels with the thing it curates
+    # tracked, so the curation travels with the thing it curates. A key left out of it still
+    # shows, under Elsewhere, so an import is never hidden by not having been curated yet.
     conf = {}
     ordering = lib / "order.yml"
     if ordering.is_file():
@@ -410,12 +402,7 @@ def library_markup():
     if rest:
         rows += ('<h3 class="libgroup">Elsewhere</h3>'
                  + "".join(row(k, k in start) for k in rest))
-    # every paper's notes, kept out of the flow: the notes panel shows one at a time
-    store = "".join(
-        f'<div class="papernotes" id="pn-{html.escape(k)}" data-title="{html.escape(BIB.names(k))} '
-        f'{html.escape(BIB.year(k))}" data-pdf="{"1" if k in pdfs else ""}" '
-        f'data-doi="{html.escape(str((refs.get(k) or {}).get("doi") or ""))}">{notes_html(k)}</div>'
-        for k in order)
+
     n_pdf = len(pdfs & set(refs))
     up = ('<svg viewBox="0 0 14 14" width="13" height="13" fill="none" aria-hidden="true">'
           '<path d="M7 9.5V2.5M7 2.5 4.2 5.3M7 2.5l2.8 2.8" stroke="currentColor"'
@@ -429,8 +416,129 @@ def library_markup():
             '<input id="libpdf" type="file" accept="application/pdf" multiple hidden>'
             '</form><p class="libsay" id="libsay"></p>'
             f'<p class="libcount">{n_pdf} papers of {len(refs)} citations.</p>')
-    return (f'<div id="liblist">{lead}{rows}</div>'
-            f'<div id="pnstore" hidden>{store}</div>')
+    return {
+        "pane": f'<div id="liblist">{lead}{rows}</div>',
+        "rows": rows,
+        "notes": {k: notes_html(k) for k in order if k in pdfs},
+        "pdfs": sorted(pdfs & set(refs)),
+        "stubs": {k: str((refs.get(k) or {}).get("doi") or "") for k in order if k not in pdfs},
+    }
+
+
+def page_links(body):
+    """A link written as #/entry/<slug> is the notebook's own way to name another page, and
+    it does not depend on how deep the linking page sits. It becomes the page's real url."""
+    return re.sub(r'href="#/entry/([A-Za-z0-9_.-]+)"', r'href="@@ROOT@@\1/" data-rootlink="\1/"', body)
+
+
+def entry_html(e):
+    """One entry, as the body of its own page."""
+    tags = "".join(
+        f'<button class="tag sm" data-tag="{html.escape(t)}" aria-pressed="false">'
+        f'{html.escape(t)}</button>' for t in e["tags"])
+    hist = (f'<a class="ref" href="{REPO}/tree/{BRANCH}/{PAGES.name}/{e["slug"]}"'
+            f' rel="noreferrer">github</a>') if REPO else ""
+    banner = ""
+    if e["why"]:
+        banner = ('<div class="provisional"><p><strong>Provisional.</strong> These numbers are '
+                  'not settled:</p><ul>'
+                  + "".join(f"<li>{html.escape(w)}</li>" for w in e["why"]) + "</ul></div>")
+    return f"""
+      <section class="entry" id="{e['slug']}" data-tags="{html.escape('|'.join(e['tags']))}"
+               data-month="{e['date'][:7]}">
+        <div class="text">
+        <p class="label">{e['updated']} {tags}</p>
+        <h2 class="etitle">{html.escape(e['title'])}</h2>
+        {banner}
+        {page_links(e['body'])}
+        </div>
+        <div class="foot">{hist}{e['prov']}</div>
+      </section>"""
+
+
+def paper_main(key, notes):
+    k = html.escape(key)
+    return (f'<div class="paperpage" data-key="{k}" '
+            f'data-title="{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}">'
+            f'<div class="papernotes" hidden>{notes}</div>'
+            f'<iframe class="paperframe" title="{k}" src="@@ROOT@@library/pdf/{k}.pdf"></iframe>'
+            '</div>')
+
+
+def stub_main(key, doi):
+    """A paper that is cited but not on disk. The page says so, and the script primes the
+    import box with the doi so the next step is one click."""
+    k = html.escape(key)
+    why = (f'Its doi is <code>{html.escape(doi)}</code>.' if doi
+           else 'The bibliography has no doi for it.')
+    return (f'<div class="nopdf" data-key="{k}" data-doi="{html.escape(doi)}">'
+            f'<p class="libref">{BIB.reference(key)}</p>'
+            f'<p>No pdf on disk for <code>{k}</code>. {why} Add the pdf to the library to read it.</p>'
+            '</div>')
+
+
+def shell(depth, title, main, shared):
+    """One page of the site.
+
+    depth is how many directories below the root the page sits, and every link is written
+    relative to that. It is what makes the build correct wherever it is mounted: at a path,
+    at a bare host, or opened straight off disk. An absolute href would have to know the
+    mount, and the mount is not the build's business. The script makes the links absolute
+    once it is running, so swapping content under another url cannot break them.
+    """
+    root = "../" * depth or "./"
+    page = (MARKUP
+            .replace("@@RAIL@@", shared["rail"])
+            .replace("@@TITLE@@", html.escape(TITLE))
+            .replace("@@LATEST@@", shared["latest"])
+            .replace("@@N@@", str(shared["n"]))
+            .replace("@@SCRATCH@@", shared["scratch"])
+            .replace("@@FILTERS@@", shared["filters"])
+            .replace("@@DATES@@", shared["dates"])
+            .replace("@@SOURCES@@", shared["sources"])
+            .replace("@@MAIN@@", main))
+    page = page.replace("@@ROOT@@", root)       # last, so the pieces above resolve too
+    return ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            + HEAD
+            + f"<title>{html.escape(title)}</title>\n"
+            + f'<link rel="stylesheet" href="{root}assets/style.css">\n</head>\n'
+            + f'<body data-root="{root}">\n'
+            + page
+            + f'<script src="{root}assets/app.js"></script>\n</body>\n</html>\n')
+
+
+def emit_site(pages, site):
+    """A conventional static site: a directory per page, one stylesheet, one script.
+
+    Clean urls throughout, so every page is <dir>/index.html and any static host serves
+    it without rewrite rules. A page gone from the notebook is gone from the build.
+    """
+    site = Path(site)
+    site.mkdir(parents=True, exist_ok=True)
+    (site / ".nojekyll").write_text("")          # Jekyll eats anything starting with _ or .
+    (site / "assets").mkdir(exist_ok=True)
+    (site / "assets" / "style.css").write_text(STYLE)
+    (site / "assets" / "app.js").write_text(APP)
+    written = set()
+    for rel, text in pages:
+        out = site / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        written.add(rel)
+    for d in list(site.iterdir()):
+        if d.is_dir() and d.name not in ("assets", "library") and f"{d.name}/index.html" not in written:
+            shutil.rmtree(d)
+    if (site / "library").is_dir():
+        for d in list((site / "library").iterdir()):
+            if d.is_dir() and d.name != "pdf" and f"library/{d.name}/index.html" not in written:
+                shutil.rmtree(d)
+    total = sum(f.stat().st_size for f in site.rglob("*") if f.is_file())
+    try:
+        shown = site.relative_to(ROOT)
+    except ValueError:
+        shown = site
+    print(f"  {shown}/  {len(written)} pages, {total // 1024} KB")
 
 
 def build(site=None, drafts=True):
@@ -477,10 +585,10 @@ def build(site=None, drafts=True):
         for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
     scratch = "".join(
-        f'<a class="scratchlink" href="#/entry/{e["slug"]}">{html.escape(e["title"])}</a>'
+        f'<a class="scratchlink" href="@@ROOT@@{e["slug"]}/" data-rootlink="{e["slug"]}/">'
+        f'{html.escape(e["title"])}</a>'
         for e in recent if e["scratch"])
 
-    scratch_slug = next((e["slug"] for e in recent if e["scratch"]), "")
     panes = [r for r in ((CONF.get("serve") or {}).get("panes") or []) if r.get("url")]
     term = next((r for r in panes if r.get("label") == "terminal"), None)
     LIB = library_markup()
@@ -508,41 +616,19 @@ def build(site=None, drafts=True):
         '<div id="termbody"></div>'
         '<div id="libwrap"><div id="notesbar"><span id="notestitle"></span>'
         '<button id="notesback" title="back to the papers">&#8592;</button></div>'
-        f'<div id="libbody">{LIB}<div id="notesbody"></div></div></div></div>'
-        '<div id="panesplit" role="separator" tabindex="0" aria-label="resize"></div>'
-        '<div id="paperwrap"><iframe id="paper" title="paper"></iframe></div>')
+        f'<div id="libbody">{LIB["pane"] if LIB else ""}<div id="notesbody"></div></div></div></div>'
+        '<div id="panesplit" role="separator" tabindex="0" aria-label="resize"></div>')
 
     toc = ""
-    body = ""
     for e in recent:
-        if not e["scratch"]:
-            toc += (
-                f'<a class="tocrow" href="#/entry/{e["slug"]}" '
-                f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
-                f'title="{html.escape(e["title"])}">'
-                f'<span class="toctitle">{html.escape(e["title"])}</span>'
-                f'<span class="tocdate">{e["updated"]}</span></a>')
-        tags = "".join(
-            f'<button class="tag sm" data-tag="{html.escape(t)}" aria-pressed="false">'
-            f'{html.escape(t)}</button>' for t in e["tags"])
-        hist = (f'<a class="ref" href="{REPO}/tree/{BRANCH}/{PAGES.name}/{e["slug"]}"'
-                f' rel="noreferrer">github</a>') if REPO else ""
-        banner = ""
-        if e["why"]:
-            banner = ('<div class="provisional"><p><strong>Provisional.</strong> These numbers are '
-                      'not settled:</p><ul>'
-                      + "".join(f"<li>{html.escape(w)}</li>" for w in e["why"]) + "</ul></div>")
-        body += f"""
-      <section class="entry" id="{e['slug']}" data-tags="{html.escape('|'.join(e['tags']))}"
-               data-month="{e['date'][:7]}">
-        <div class="text">
-        <p class="label">{e['updated']} {tags}</p>
-        <h2 class="etitle"><a class="anchor" href="#/entry/{e['slug']}">{html.escape(e['title'])}</a></h2>
-        {banner}
-        {e['body']}
-        </div>
-        <div class="foot">{hist}{e['prov']}</div>
-      </section>"""
+        if e["scratch"]:
+            continue
+        toc += (
+            f'<a class="tocrow" href="@@ROOT@@{e["slug"]}/" data-rootlink="{e["slug"]}/" '
+            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
+            f'title="{html.escape(e["title"])}">'
+            f'<span class="toctitle">{html.escape(e["title"])}</span>'
+            f'<span class="tocdate">{e["updated"]}</span></a>')
 
     # every dependency with a url that some page ran, then the reading list
     ref_only = {r[2].rstrip("/") for r in rows if r[1] == "ref-only"}
@@ -555,20 +641,38 @@ def build(site=None, drafts=True):
                 u = plan.deps[name]["url"].rstrip("/")
                 if u and "{version}" not in u and u not in ref_only:
                     cited.setdefault(u, named.get(u, name))
-    listed = [(name, url) for url, name in cited.items()]
+    listed_srcs = [(name, url) for url, name in cited.items()]
     for r in sidebar_sources(rows):                       # extras no page ran
         if r[2].rstrip("/") not in cited:
-            listed.append((r[0], r[2]))
+            listed_srcs.append((r[0], r[2]))
     srcs = "".join(
         f'<a class="src" href="{u}" rel="noreferrer">{html.escape(n)}</a>'
-        for n, u in listed)
+        for n, u in listed_srcs)
 
-    page = Template(TEMPLATE).safe_substitute(
-        title=TITLE, filters=filters, dates=dates, toc=toc, entries=body, scratch=scratch, rail=rail,
-        sources=srcs,
-        n=len(entries), latest=recent[0]["updated"],
-        )
-    emit(page, site)
+    shared = {"rail": rail, "latest": recent[0]["updated"], "n": len(entries),
+              "scratch": scratch, "filters": filters, "dates": dates, "sources": srcs}
+    index_main = ('<p class="empty" id="empty">Nothing matches every filter selected.</p>'
+                  '<div id="tocwrap"><div class="tochead"><span class="label">Page</span>'
+                  '<button class="sortbtn" id="sortdate" type="button">Updated '
+                  '<span class="arrow" id="sortarrow">&darr;</span></button></div>'
+                  f'<nav class="toc" id="toc">{toc}</nav></div>')
+    pages = [("index.html", shell(0, TITLE, index_main, shared))]
+    for e in recent:
+        pages.append((f"{e['slug']}/index.html",
+                      shell(1, f"{e['title']} · {TITLE}", entry_html(e), shared)))
+    if LIB:
+        pages.append(("library/index.html",
+                      shell(1, f"Library · {TITLE}",
+                            f'<div class="lib liblist-page">{LIB["rows"]}</div>', shared)))
+        for key in LIB["pdfs"]:
+            pages.append((f"library/{key}/index.html",
+                          shell(2, f"{BIB.names(key)} {BIB.year(key)} · {TITLE}",
+                                paper_main(key, LIB["notes"].get(key, "")), shared)))
+        for key, doi in LIB["stubs"].items():
+            pages.append((f"library/{key}/index.html",
+                          shell(2, f"{BIB.names(key)} {BIB.year(key)} · {TITLE}",
+                                stub_main(key, doi), shared)))
+    emit_site(pages, site or SITE)
     L.HASHER.save()
     for p in held:
         print(f"  draft, not published: {p.parent.name}")
@@ -579,30 +683,9 @@ def build(site=None, drafts=True):
     print(f"  newest: {recent[0]['slug']} ({recent[0]['date']}) {recent[0]['title'][:52]}")
 
 
-def emit(page, site=None):
-    """One self-contained file.
+HEAD = '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />\n'
 
-    Splitting out style.css and app.js broke the moment the site was mounted at a path:
-    a browser at /notebook resolves href="style.css" to /style.css, which is not there.
-    Inlining costs 8 KB and makes the page correct at any mount depth, with or without a
-    trailing slash, and over file:// too.
-    """
-    site = site or SITE
-    site.mkdir(parents=True, exist_ok=True)
-    # Jekyll would otherwise swallow anything whose name starts with _ or .
-    (site / ".nojekyll").write_text("")
-    out = site / "index.html"
-    out.write_text(page)
-    try:
-        shown = out.relative_to(ROOT)
-    except ValueError:
-        shown = out
-    print(f"  {shown}  {out.stat().st_size // 1024} KB")
-
-
-TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
-<title>$title</title>
-<style>
+STYLE = r"""
   :root {
     /* Warm neutrals pulled down from Wilf's #996633 ground and #cc9933 highlight, with
        his #3333ff on the wordmark, his #ff6600 tamed for links and his #551a8b for
@@ -670,7 +753,6 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   :root { --rail:30px; --pane:26rem; --shellbg:#1c1b19; }
   body:has(#rail) { padding-left:var(--rail); }
   body:has(#rail).paneopen { padding-left:calc(var(--rail) + var(--pane)); }
-  body.paperview #page { display:none; }
 
   #rail { position:fixed; left:0; top:0; bottom:0; width:var(--rail); z-index:70;
     background:var(--shellbg); display:flex; flex-direction:column; align-items:center;
@@ -752,13 +834,6 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   #panesplit::after { content:""; position:absolute; top:50%; left:50%; width:2px; height:28px;
     margin:-14px 0 0 -1px; border-radius:2px; background:#5f594e; }
 
-  /* an iframe is a replaced element, so width:auto takes its intrinsic 300x150 rather than
-     stretching to the insets. The wrapper is what gets positioned. */
-  #paperwrap { position:fixed; left:var(--rail); right:0; top:0; bottom:0; z-index:40;
-    display:none; background:var(--panel); }
-  body.paneopen #paperwrap { left:calc(var(--rail) + var(--pane)); }
-  body.paperview #paperwrap { display:block; }
-  #paperwrap iframe { width:100%; height:100%; border:0; display:block; }
   body.dragpanel { cursor:col-resize; user-select:none; }
   body.dragpanel iframe { pointer-events:none; }
 
@@ -983,17 +1058,30 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     border-top:1px solid var(--rule); white-space:pre-wrap; max-height:12rem; overflow:auto; }
   .edstatus.err { color:var(--oxide); }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
-</style>
 
-$rail
+  /* A paper's page: the pdf is the page, and its notes are lifted into the pane. Nothing is
+     fixed-positioned here, since #page is a container and would catch it. */
+  body.paperview .topbar, body.paperview .shell > .side { display:none; }
+  body.paperview { overflow:hidden; }
+  body.paperview .shell { grid-template-columns:minmax(0,1fr); max-width:none; padding:0; gap:0; }
+  body.paperview .main { gap:0; }
+  .paperpage { height:100vh; }
+  .paperframe { width:100%; height:100%; border:0; display:block; background:var(--panel); }
+  /* a citation to a paper with no pdf on disk lands here, with the import box primed */
+  .nopdf .libref { margin:0 0 var(--s2); }
+  .nopdf p { color:var(--muted); }
+  .liblist-page { max-width:40rem; }
+"""
+
+MARKUP = r"""@@RAIL@@
 <div id="page">
 <header class="topbar">
   <div class="inner">
     <div class="head">
-    <span class="wordmark"><a href="#/">$title</a></span>
+    <span class="wordmark"><a href="@@ROOT@@" data-rootlink="">@@TITLE@@</a></span>
     <div class="provenance">
-      <span><b>Updated</b> $latest</span>
-      <span><b>Pages</b> $n</span>
+      <span><b>Updated</b> @@LATEST@@</span>
+      <span><b>Pages</b> @@N@@</span>
     </div>
     </div>
   </div>
@@ -1001,116 +1089,174 @@ $rail
 
 <div class="shell">
   <aside class="side">
-    $scratch
+    @@SCRATCH@@
     <div class="filterhead">
       <p class="label">Tags</p>
       <button id="reset" type="button">clear</button>
     </div>
-    <div class="filters">$filters</div>
+    <div class="filters">@@FILTERS@@</div>
     <p class="label datehead">Dates</p>
-    <div class="filters">$dates</div>
+    <div class="filters">@@DATES@@</div>
   </aside>
 
-  <main class="main">
-    <p class="empty" id="empty">Nothing matches every filter selected.</p>
-    <div id="tocwrap">
-      <div class="tochead">
-        <span class="label">Page</span>
-        <button class="sortbtn" id="sortdate" type="button">
-          Updated <span class="arrow" id="sortarrow">&darr;</span></button>
-      </div>
-      <nav class="toc" id="toc">$toc</nav>
-    </div>
-    $entries
-
+  <main class="main" id="main">
+@@MAIN@@
   </main>
 
   <aside class="side right">
     <p class="label">Sources</p>
-    <div class="sources">$sources</div>
+    <div class="sources">@@SOURCES@@</div>
   </aside>
 </div>
 </div>
+"""
 
+APP = r"""(function () {
+  "use strict";
+  var body = document.body, root = document.documentElement;
 
-<script>
-(function () {
-  var tags = new Set(), months = new Set(), only = null;
-  var entries = [].slice.call(document.querySelectorAll(".entry[data-tags]"));
-  var rows = [].slice.call(document.querySelectorAll(".tocrow"));
-  var toc = document.getElementById("toc");
-  var tocwrap = document.getElementById("tocwrap");
-  var sortarrow = document.getElementById("sortarrow");
-  var newestFirst = true;
-  var reset = document.getElementById("reset");
-  var empty = document.getElementById("empty");
-  var suppress = false;
+  /* ---- the mount ----
+     Every page records how deep it sits: data-root is ./ or ../ or ../../. Resolved against
+     the page's own url, that gives the mount root as one absolute path, so nothing below has
+     to know how deep the current page is or where the site is served. */
+  var MOUNT = new URL(body.getAttribute("data-root") || "./", location.href).pathname;
+  if (!/\/$/.test(MOUNT)) MOUNT += "/";
 
+  function here() {
+    return location.pathname.replace(/index\.html$/, "").replace(/\/?$/, "/");
+  }
+  function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  /* Links in the shell and in a page were written relative to the page they were built
+     into. Made absolute once, they survive the content being swapped under another url. */
+  function absolutise() {
+    [].forEach.call(document.querySelectorAll("a[data-rootlink]"), function (a) {
+      a.setAttribute("href", MOUNT + a.getAttribute("data-rootlink"));
+    });
+  }
+
+  /* ---- navigation ----
+     Real pages on disk, fetched and swapped in. The shell and whatever is running in it,
+     the terminal above all, stays put. With no script the links are ordinary links. */
+  var hooks = [];
+  function after() {
+    absolutise();
+    hooks.forEach(function (f) {
+      try { f(); } catch (e) { if (window.console) console.error(e); }
+    });
+  }
+  function sameSite(u) {
+    return u.origin === location.origin && u.pathname.indexOf(MOUNT) === 0;
+  }
+  function isPage(u) {
+    return /\/$/.test(u.pathname) || !/\.[a-z0-9]{1,5}$/i.test(u.pathname);
+  }
+  var seq = 0;
+  function go(href, opts) {
+    opts = opts || {};
+    var u = new URL(href, location.href);
+    if (!sameSite(u) || !isPage(u)) { location.href = u.href; return; }
+    if (!/\/$/.test(u.pathname)) u.pathname += "/";
+    var mine = ++seq;
+    fetch(u.href, { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
+      .then(function (text) {
+        if (mine !== seq) return;                /* a later navigation won */
+        var doc = new DOMParser().parseFromString(text, "text/html");
+        var fresh = doc.getElementById("main"), old = document.getElementById("main");
+        if (!fresh || !old) { location.href = u.href; return; }
+        var keepY = opts.keepScroll ? window.scrollY : null;
+        if (opts.replace) {
+          history.replaceState({ y: keepY === null ? 0 : keepY }, "", u.href);
+        } else {
+          history.replaceState({ y: window.scrollY }, "");   /* so back lands where it left */
+          history.pushState({ y: 0 }, "", u.href);
+        }
+        document.title = doc.title;
+        old.replaceWith(fresh);
+        after();
+        var target = u.hash && document.getElementById(u.hash.slice(1));
+        if (keepY !== null) window.scrollTo(0, keepY);
+        else if (typeof opts.y === "number") window.scrollTo(0, opts.y);
+        else if (target) target.scrollIntoView();
+        else window.scrollTo(0, 0);
+      })
+      .catch(function () { location.href = u.href; });
+  }
+  try { history.scrollRestoration = "manual"; } catch (e) {}
+  document.addEventListener("click", function (ev) {
+    if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    var a = ev.target.closest ? ev.target.closest("a[href]") : null;
+    if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
+    if (a.getAttribute("href").charAt(0) === "#") return;
+    var u = new URL(a.href, location.href);
+    if (!sameSite(u) || !isPage(u)) return;
+    ev.preventDefault();
+    go(u.href);
+  });
+  addEventListener("popstate", function (ev) {
+    go(location.href, { replace: true, y: ev.state && typeof ev.state.y === "number" ? ev.state.y : 0 });
+  });
+
+  /* ---- the contents page: filters over the list ----
+     The filter state lives in the hash of the contents page only. A tag clicked anywhere
+     else goes to the contents with that one filter on. */
+  var tagsOn = new Set(), monthsOn = new Set(), newestFirst = true;
+  function toc() { return document.getElementById("toc"); }
   function matches(el) {
     var t = (el.getAttribute("data-tags") || "").split("|"), ok = true;
-    tags.forEach(function (x) { if (t.indexOf(x) === -1) ok = false; });
-    if (months.size && !months.has(el.getAttribute("data-month"))) ok = false;
+    tagsOn.forEach(function (x) { if (t.indexOf(x) === -1) ok = false; });
+    if (monthsOn.size && !monthsOn.has(el.getAttribute("data-month"))) ok = false;
     return ok;
   }
-
-  // the contents list is the landing view; an entry is reached by its own route
   function paint() {
     var shown = 0;
-    tocwrap.classList.toggle("hidden", !!only);
-    entries.forEach(function (el) {
-      el.classList.toggle("hidden", el.id !== only);
+    [].forEach.call(document.querySelectorAll(".tocrow"), function (el) {
+      var show = matches(el);
+      if (show) shown++;
+      el.classList.toggle("hidden", !show);
     });
-    if (!only) {
-      rows.forEach(function (el) {
-        var show = matches(el);
-        if (show) shown++;
-        el.classList.toggle("hidden", !show);
-      });
-    }
-    empty.classList.toggle("on", !only && shown === 0);
-    document.querySelectorAll("[data-tag]").forEach(function (b) {
-      b.setAttribute("aria-pressed", tags.has(b.getAttribute("data-tag")) ? "true" : "false");
+    [].forEach.call(document.querySelectorAll("[data-tag]"), function (b) {
+      b.setAttribute("aria-pressed", tagsOn.has(b.getAttribute("data-tag")) ? "true" : "false");
     });
-    document.querySelectorAll("[data-date]").forEach(function (b) {
-      b.setAttribute("aria-pressed", months.has(b.getAttribute("data-date")) ? "true" : "false");
+    [].forEach.call(document.querySelectorAll("[data-date]"), function (b) {
+      b.setAttribute("aria-pressed", monthsOn.has(b.getAttribute("data-date")) ? "true" : "false");
     });
-    reset.classList.toggle("on", tags.size > 0 || months.size > 0);
+    var reset = document.getElementById("reset"), empty = document.getElementById("empty");
+    if (reset) reset.classList.toggle("on", tagsOn.size > 0 || monthsOn.size > 0);
+    if (empty) empty.classList.toggle("on", !!toc() && shown === 0);
   }
-
-  // #/ the contents, #/entry/<slug> one entry, and #/tag/a+b/date/2026-08 composing
-  function sync() {
-    var h = "#/";
-    // Array.from, not slice.call: a Set has no length, so slice hands back nothing
-    if (tags.size) h += "tag/" + encodeURIComponent(Array.from(tags).join("+")) + "/";
-    if (months.size) h += "date/" + encodeURIComponent(Array.from(months).join("+")) + "/";
-    h = h.replace(/\/$/, "") || "#/";
-    if (location.hash !== h) { suppress = true; location.hash = h; }
+  function filterHash() {
+    var h = "";
+    /* Array.from, not slice.call: a Set has no length, so slice hands back nothing */
+    if (tagsOn.size) h += "tag/" + encodeURIComponent(Array.from(tagsOn).join("+")) + "/";
+    if (monthsOn.size) h += "date/" + encodeURIComponent(Array.from(monthsOn).join("+")) + "/";
+    return h ? "#" + h.replace(/\/$/, "") : "";
   }
-
-  function route() {
-    if (suppress) { suppress = false; return; }
-    var parts = (location.hash || "#/").replace(/^#\/?/, "").split("/").filter(Boolean);
-    tags.clear(); months.clear(); only = null;
-
-    if (parts[0] === "paper" && parts[1]) { return; }   // the paper panels own this route
-    if (parts[0] === "entry" && parts[1]) {
-      only = decodeURIComponent(parts[1]);
-      paint();
-      window.scrollTo(0, 0);
-      return;
-    }
+  function readHash() {
+    tagsOn.clear(); monthsOn.clear();
+    var parts = (location.hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
     for (var i = 0; i + 1 < parts.length; i += 2) {
       var vals = decodeURIComponent(parts[i + 1]).split("+").filter(Boolean);
-      if (parts[i] === "tag") vals.forEach(function (v) { tags.add(v); });
-      if (parts[i] === "date") vals.forEach(function (v) { months.add(v); });
+      if (parts[i] === "tag") vals.forEach(function (v) { tagsOn.add(v); });
+      if (parts[i] === "date") vals.forEach(function (v) { monthsOn.add(v); });
     }
-    paint();
-    window.scrollTo(0, 0);
   }
+  function sync() {
+    var h = filterHash();
+    if ((location.hash || "") !== h) {
+      history.replaceState(history.state, "", location.pathname + location.search + h);
+    }
+  }
+  hooks.push(function () {
+    if (toc()) readHash(); else { tagsOn.clear(); monthsOn.clear(); }
+    paint();
+  });
+  addEventListener("hashchange", function () { if (toc()) { readHash(); paint(); } });
 
   document.addEventListener("click", function (ev) {
-    // a reference to a figure, a table, an equation or a citation: the address bar holds the
-    // route, so the jump is made here rather than by changing the hash
+    /* a reference to a figure, a table, an equation: a jump within the page, not a route */
     var x = ev.target.closest ? ev.target.closest("[data-xref]") : null;
     if (x) {
       ev.preventDefault();
@@ -1120,424 +1266,366 @@ $rail
     }
     var b = ev.target.closest ? ev.target.closest("[data-tag],[data-date]") : null;
     if (b) {
-      only = null;
       var t = b.getAttribute("data-tag"), d = b.getAttribute("data-date");
-      if (t) { tags.has(t) ? tags.delete(t) : tags.add(t); }
-      if (d) { months.has(d) ? months.delete(d) : months.add(d); }
-      paint();
-      sync();
-      return;
-    }
-    if (ev.target.id === "reset") { tags.clear(); months.clear(); only = null; paint(); sync(); }
-    if (ev.target.closest && ev.target.closest("#sortdate")) {
-      newestFirst = !newestFirst;
-      sortarrow.innerHTML = newestFirst ? "&darr;" : "&uarr;";
-      rows.slice().reverse().forEach(function (el) { toc.appendChild(el); });
-      rows.reverse();
-    }
-  });
-
-  window.addEventListener("hashchange", route);
-  route();
-})();
-</script><script>
-(function () {
-  // served at any mount depth, so edit/ is resolved against the page, not the host root
-  var base = location.pathname.replace(/index\.html$/, "");
-  if (!/\/$/.test(base)) base += "/";
-  var dlg, ta, fileEl, statusEl, slug = null, hash = null, clean = "";
-
-  function status(msg, err) {
-    statusEl.textContent = msg; statusEl.classList.toggle("err", !!err);
-  }
-
-  function make() {
-    dlg = document.createElement("dialog");
-    dlg.className = "editor";
-    dlg.innerHTML = '<form method="dialog"><div class="edhead"><span class="file"></span>' +
-      '<button type="button" class="save">save</button><button type="button" class="close">close</button></div>' +
-      '<textarea spellcheck="true"></textarea><div class="edstatus"></div></form>';
-    document.body.appendChild(dlg);
-    ta = dlg.querySelector("textarea"); fileEl = dlg.querySelector(".file");
-    statusEl = dlg.querySelector(".edstatus");
-    dlg.querySelector(".save").addEventListener("click", save);
-    dlg.querySelector(".close").addEventListener("click", close);
-    dlg.addEventListener("cancel", function (ev) { ev.preventDefault(); close(); });
-    ta.addEventListener("keydown", function (ev) {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); save(); }
-    });
-    ta.addEventListener("input", function () {
-      status(ta.value === clean ? "" : "unsaved changes", false);
-    });
-  }
-
-  function close() {
-    if (ta.value !== clean && !confirm("Discard unsaved changes?")) return;
-    dlg.close();
-  }
-
-  function open(s) {
-    if (!dlg) make();
-    slug = s; ta.value = ""; fileEl.textContent = s; status("loading", false);
-    dlg.showModal();
-    fetch(base + "edit/" + encodeURIComponent(s), { cache: "no-store" })
-      .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); })
-      .then(function (res) {
-        if (!res[0]) throw new Error(res[1].error);
-        fileEl.textContent = res[1].file; hash = res[1].hash;
-        ta.value = clean = res[1].text; status("ctrl+s saves, esc closes", false);
-        ta.focus(); ta.setSelectionRange(0, 0); ta.scrollTop = 0;
-      })
-      .catch(function (e) { status(String(e.message || e), true); });
-  }
-
-  function save() {
-    if (!slug || hash === null) return;
-    status("saving and rebuilding", false);
-    var text = ta.value;
-    fetch(base + "edit/" + encodeURIComponent(slug), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, hash: hash }) })
-      .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); })
-      .then(function (res) {
-        if (!res[0]) throw new Error(res[1].error);
-        clean = text;
-        location.reload();
-      })
-      .catch(function (e) { status("not saved: " + String(e.message || e), true); });
-  }
-
-  fetch(base + "edit/", { cache: "no-store" }).then(function (r) {
-    if (!r.ok) return;
-    document.querySelectorAll(".entry[id]").forEach(function (el) {
-      var b = document.createElement("button");
-      b.type = "button"; b.className = "editbtn"; b.textContent = "edit";
-      b.addEventListener("click", function () { open(el.id); });
-      el.querySelector(".label").appendChild(b);
-    });
-  }).catch(function () {});
-})();
-</script>
-<script>
-(function () {
-  /* Live reload. The server announces a new build id after every successful rebuild, so a
-     page follows what is on disk without anyone refreshing. A static copy answers no such
-     endpoint, and this gives up rather than retrying at it forever. */
-  var base = location.pathname.replace(/[^/]*$/, "");
-  var id = null, held = false, fails = 0, es = null;
-
-  function editing() { return !!document.querySelector("dialog.editor[open]"); }
-
-  function reload() {
-    try { sessionStorage.setItem("sloop.scroll", String(window.scrollY)); } catch (e) {}
-    location.reload();
-  }
-
-  function arrived(data) {
-    if (id === null) { id = data; return; }   /* the id held at connect, not a change */
-    if (data === id) return;
-    id = data;
-    if (editing()) { held = true; return; }   /* never discard what is being typed */
-    reload();
-  }
-
-  /* take a held rebuild once the editor is out of the way */
-  setInterval(function () { if (held && !editing()) { held = false; reload(); } }, 500);
-
-  try {
-    var y = sessionStorage.getItem("sloop.scroll");
-    if (y !== null) {
-      sessionStorage.removeItem("sloop.scroll");
-      addEventListener("load", function () { window.scrollTo(0, parseFloat(y) || 0); });
-    }
-  } catch (e) {}
-
-  try { es = new EventSource(base + "live"); } catch (e) { return; }
-  es.onopen = function () { fails = 0; };
-  es.onmessage = function (ev) { arrived(ev.data); };
-  es.onerror = function () { if (++fails >= 3) es.close(); };
-})();
-</script>
-<script>
-(function () {
-  /* The companion pane. Its contents are someone else's problem: this only opens, closes,
-     sizes and focuses it. The frame has no src until first opened, so a reader who never
-     opens it never starts whatever is on the other end. */
-  var body = document.body, root = document.documentElement;
-  var rail = document.getElementById("rail");
-  if (!rail) return;
-  var pane = document.getElementById("pane");
-  var paper = document.getElementById("paper");
-  var btn = document.getElementById("panebtn");
-  var TERM = pane.dataset.term;
-
-  function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-  function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
-
-  /* the terminal frame is built once, the first time the pane is opened on the notebook
-     view, and then kept: switching to a paper and back must not drop what it is attached to */
-  var termFrame = null;
-  function ensureTerm() {
-    if (termFrame || !TERM) return;
-    termFrame = document.createElement("iframe");
-    termFrame.src = TERM;
-    termFrame.title = "terminal";
-    document.getElementById("termbody").appendChild(termFrame);
-  }
-  function xterm() {
-    try {
-      var d = termFrame && termFrame.contentDocument;
-      return d && d.querySelector(".xterm-helper-textarea");
-    } catch (e) { return null; }
-  }
-  function focusTerm() {
-    if (body.classList.contains("libview")) return;
-    var ta = xterm();
-    if (ta) ta.focus();
-    else if (termFrame) { try { termFrame.contentWindow.focus(); } catch (e) {} }
-  }
-
-  function setOpen(open, focus) {
-    body.classList.toggle("paneopen", open);
-    btn.setAttribute("aria-pressed", String(open));
-    set("sloop.paneopen", open ? "1" : "0");
-    if (!open) return;
-    if (!body.classList.contains("libview")) {
-      ensureTerm();
-      if (focus !== false) setTimeout(focusTerm, 240);
-    }
-  }
-  btn.addEventListener("click", function () { setOpen(!body.classList.contains("paneopen")); });
-  document.addEventListener("keydown", function (ev) {
-    if (!ev.ctrlKey || ev.metaKey || ev.altKey) return;
-    if (ev.key !== "`" && ev.code !== "Backquote") return;
-    setOpen(!body.classList.contains("paneopen")); ev.preventDefault();
-  });
-
-  /* typing belongs to the terminal whenever it is the thing reading keys, so this does
-     nothing in the paper view and nothing while text is selected */
-  document.addEventListener("mouseup", function (ev) {
-    if (!body.classList.contains("paneopen") || !xterm()) return;
-    if (document.querySelector("dialog.editor[open]")) return;
-    var t = ev.target;
-    if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .editbtn, dialog.editor, #rail, #pane, #panesplit")) return;
-    var sel = document.getSelection();
-    if (sel && !sel.isCollapsed) return;
-    focusTerm();
-  });
-
-  /* ---- the views ----
-     libview puts the library in the pane: the list of papers, or one paper's notes.
-     paperview additionally puts that paper's pdf in the main area. Neither is a page. */
-  function showPaper(key) {
-    var src = document.getElementById("pn-" + key);
-    if (!src || !src.dataset.pdf) return false;
-    document.getElementById("notesbody").innerHTML = src.innerHTML;
-    document.getElementById("notestitle").textContent = src.dataset.title || key;
-    paper.src = "library/pdf/" + encodeURIComponent(key) + ".pdf";
-    body.classList.add("libview", "paperview");
-    set("sloop.libview", "1");
-    setOpen(true, false);                 /* a paper arrives with its notes beside it */
-    return true;
-  }
-  /* The library is a state of the pane, not a route: navigating the notebook must not close
-     it, and closing it must not move the notebook. Only a paper is a route, because a paper
-     takes over the main area. */
-  var want = null;                        /* a doi waiting for the list to come up */
-  var backTo = "#/";                      /* where the notebook was before a paper took over */
-
-  function primeBox() {
-    if (!want) return;
-    var box = document.getElementById("libdoi"), say = document.getElementById("libsay");
-    if (box) {
-      box.value = want.doi;
-      if (say) {
-        say.className = "libsay";
-        say.textContent = want.doi
-          ? "no pdf for " + want.key + ". Its doi is in the box, or add the pdf."
-          : "no pdf for " + want.key + ", and no doi on record.";
+      if (!toc()) {
+        go(MOUNT + (t ? "#tag/" + encodeURIComponent(t) : "#date/" + encodeURIComponent(d)));
+        return;
       }
-      if (want.doi) box.focus();
-    }
-    want = null;
-  }
-
-  function setLib(open) {
-    body.classList.toggle("libview", open);
-    set("sloop.libview", open ? "1" : "0");
-    if (open) { setOpen(true, false); primeBox(); }
-    else if (body.classList.contains("paperview")) location.hash = backTo;
-    if (!open && body.classList.contains("paneopen")) ensureTerm();
-    reflect();
-  }
-
-  /* Two views, exactly one of them on: notebook puts the terminal in the pane, library puts
-     the papers there. Scratch is not one of them, it only moves the notebook. */
-  var navs = [].slice.call(rail.querySelectorAll(".navbtn"));
-  var scratches = [].slice.call(rail.querySelectorAll(".scratchbtn"));
-  function reflect() {
-    var lib = body.classList.contains("libview");
-    navs.forEach(function (b) {
-      b.setAttribute("aria-checked", String((b.dataset.view === "library") === lib));
-    });
-    var h = location.hash || "";
-    scratches.forEach(function (b) {
-      b.setAttribute("aria-pressed", String(h === "#/entry/" + b.dataset.slug));
-    });
-  }
-
-  function view() {
-    var h = location.hash || "";
-    var m = h.match(/^#\/paper\/(.+)$/);
-    if (!m) backTo = h || "#/";           /* the last place the notebook was */
-    if (m && showPaper(decodeURIComponent(m[1]))) { reflect(); return; }
-    paper.removeAttribute("src");
-    body.classList.remove("paperview");   /* the list comes back, not stale notes */
-    if (m) {
-      /* cited but not on disk: show the list with its doi ready to act on */
-      var src = document.getElementById("pn-" + decodeURIComponent(m[1]));
-      want = { key: decodeURIComponent(m[1]), doi: src ? (src.dataset.doi || "") : "" };
-      location.hash = backTo;             /* the notebook stays where it was */
-      setLib(true);
+      if (t) { tagsOn.has(t) ? tagsOn.delete(t) : tagsOn.add(t); }
+      if (d) { monthsOn.has(d) ? monthsOn.delete(d) : monthsOn.add(d); }
+      paint(); sync();
       return;
     }
-    if (body.classList.contains("paneopen") && !body.classList.contains("libview")) ensureTerm();
-    reflect();
-  }
+    if (ev.target.id === "reset") { tagsOn.clear(); monthsOn.clear(); paint(); sync(); return; }
+    if (ev.target.closest && ev.target.closest("#sortdate")) {
+      var tc = toc();
+      if (!tc) return;
+      newestFirst = !newestFirst;
+      var arrow = document.getElementById("sortarrow");
+      if (arrow) arrow.innerHTML = newestFirst ? "&darr;" : "&uarr;";
+      [].slice.call(tc.querySelectorAll(".tocrow")).reverse().forEach(function (el) { tc.appendChild(el); });
+    }
+  });
 
-  navs.forEach(function (b) {
-    b.addEventListener("click", function () {
-      var lib = b.dataset.view === "library";
-      if (lib === body.classList.contains("libview")) { setOpen(true); return; }
-      setLib(lib);                        /* leaving the library also closes any paper */
-      if (!lib) focusTerm();
+  /* ---- the editor and the importer exist only where the server answers edit/ ---- */
+  var editOn = fetch(MOUNT + "edit/", { cache: "no-store" })
+    .then(function (r) { return r.ok; }).catch(function () { return false; });
+
+  (function () {
+    var dlg, ta, fileEl, statusEl, slug = null, hash = null, clean = "";
+    function status(msg, err) { statusEl.textContent = msg; statusEl.classList.toggle("err", !!err); }
+    function make() {
+      dlg = document.createElement("dialog");
+      dlg.className = "editor";
+      dlg.innerHTML = '<form method="dialog"><div class="edhead"><span class="file"></span>' +
+        '<button type="button" class="save">save</button><button type="button" class="close">close</button></div>' +
+        '<textarea spellcheck="true"></textarea><div class="edstatus"></div></form>';
+      document.body.appendChild(dlg);
+      ta = dlg.querySelector("textarea"); fileEl = dlg.querySelector(".file");
+      statusEl = dlg.querySelector(".edstatus");
+      dlg.querySelector(".save").addEventListener("click", save);
+      dlg.querySelector(".close").addEventListener("click", close);
+      dlg.addEventListener("cancel", function (ev) { ev.preventDefault(); close(); });
+      ta.addEventListener("keydown", function (ev) {
+        if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); save(); }
+      });
+      ta.addEventListener("input", function () {
+        status(ta.value === clean ? "" : "unsaved changes", false);
+      });
+    }
+    function close() {
+      if (ta.value !== clean && !confirm("Discard unsaved changes?")) return;
+      dlg.close();
+    }
+    function open(s) {
+      if (!dlg) make();
+      slug = s; ta.value = ""; fileEl.textContent = s; status("loading", false);
+      dlg.showModal();
+      fetch(MOUNT + "edit/" + encodeURIComponent(s), { cache: "no-store" })
+        .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); })
+        .then(function (res) {
+          if (!res[0]) throw new Error(res[1].error);
+          fileEl.textContent = res[1].file; hash = res[1].hash;
+          ta.value = clean = res[1].text; status("ctrl+s saves, esc closes", false);
+          ta.focus(); ta.setSelectionRange(0, 0); ta.scrollTop = 0;
+        })
+        .catch(function (e) { status(String(e.message || e), true); });
+    }
+    function save() {
+      if (!slug || hash === null) return;
+      status("saving and rebuilding", false);
+      var text = ta.value;
+      fetch(MOUNT + "edit/" + encodeURIComponent(slug), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text, hash: hash }) })
+        .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); })
+        .then(function (res) {
+          if (!res[0]) throw new Error(res[1].error);
+          clean = text;
+          dlg.close();
+          go(location.href, { replace: true, keepScroll: true });
+        })
+        .catch(function (e) { status("not saved: " + String(e.message || e), true); });
+    }
+    function wire() {
+      [].forEach.call(document.querySelectorAll("#main .entry[id]"), function (el) {
+        if (el.querySelector(".editbtn")) return;
+        var b = document.createElement("button");
+        b.type = "button"; b.className = "editbtn"; b.textContent = "edit";
+        b.addEventListener("click", function () { open(el.id); });
+        var label = el.querySelector(".label");
+        if (label) label.appendChild(b);
+      });
+    }
+    editOn.then(function (ok) { if (!ok) return; wire(); hooks.push(wire); });
+  })();
+
+  /* ---- live reload ----
+     The server announces a build id after every successful rebuild. The page follows by
+     fetching itself again and swapping, so the terminal is never torn down by an edit.
+     A static copy answers no such endpoint, and this gives up rather than retry forever. */
+  (function () {
+    var id = null, held = false, fails = 0, es;
+    function editing() { return !!document.querySelector("dialog.editor[open]"); }
+    function refresh() { go(location.href, { replace: true, keepScroll: true }); }
+    function arrived(d) {
+      if (id === null) { id = d; return; }     /* the id held at connect, not a change */
+      if (d === id) return;
+      id = d;
+      if (editing()) { held = true; return; }  /* never discard what is being typed */
+      refresh();
+    }
+    setInterval(function () { if (held && !editing()) { held = false; refresh(); } }, 500);
+    try { es = new EventSource(MOUNT + "live"); } catch (e) { return; }
+    es.onopen = function () { fails = 0; };
+    es.onmessage = function (ev) { arrived(ev.data); };
+    es.onerror = function () { if (++fails >= 3) es.close(); };
+  })();
+
+  /* ---- the rail and the pane ----
+     Two views, exactly one on: notebook puts the terminal in the pane, library puts the
+     papers there. A paper's page carries its notes, and they are lifted into the pane. */
+  (function () {
+    var rail = document.getElementById("rail");
+    if (!rail) return;
+    var pane = document.getElementById("pane"), btn = document.getElementById("panebtn");
+    var TERM = pane.getAttribute("data-term");
+    var termFrame = null;
+
+    /* the frame is built once and kept: switching to a paper and back must not drop what
+       the terminal is attached to */
+    function ensureTerm() {
+      if (termFrame || !TERM) return;
+      termFrame = document.createElement("iframe");
+      termFrame.src = TERM;
+      termFrame.title = "terminal";
+      document.getElementById("termbody").appendChild(termFrame);
+    }
+    function xterm() {
+      try {
+        var d = termFrame && termFrame.contentDocument;
+        return d && d.querySelector(".xterm-helper-textarea");
+      } catch (e) { return null; }
+    }
+    function focusTerm() {
+      if (body.classList.contains("libview")) return;
+      var ta = xterm();
+      if (ta) ta.focus();
+      else if (termFrame) { try { termFrame.contentWindow.focus(); } catch (e) {} }
+    }
+    function setOpen(open, focus) {
+      body.classList.toggle("paneopen", open);
+      btn.setAttribute("aria-pressed", String(open));
+      set("sloop.paneopen", open ? "1" : "0");
+      if (!open) return;
+      if (!body.classList.contains("libview")) {
+        ensureTerm();
+        if (focus !== false) setTimeout(focusTerm, 240);
+      }
+    }
+    btn.addEventListener("click", function () { setOpen(!body.classList.contains("paneopen")); });
+    document.addEventListener("keydown", function (ev) {
+      if (!ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.key !== "`" && ev.code !== "Backquote") return;
+      setOpen(!body.classList.contains("paneopen")); ev.preventDefault();
     });
-  });
-  scratches.forEach(function (b) {
-    b.addEventListener("click", function () {
-      var to = "#/entry/" + b.dataset.slug;
-      location.hash = location.hash === to ? "#/" : to;
+    /* typing belongs to the terminal whenever it is the thing reading keys: not in the
+       library view, and not while text is selected, since ctrl+c must copy it */
+    document.addEventListener("mouseup", function (ev) {
+      if (!body.classList.contains("paneopen") || !xterm()) return;
+      if (document.querySelector("dialog.editor[open]")) return;
+      var t = ev.target;
+      if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .editbtn, dialog.editor, #rail, #pane, #panesplit")) return;
+      var sel = document.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      focusTerm();
     });
-  });
-  addEventListener("hashchange", view);
 
-  /* ---- dragging the pane ---- */
-  var on = false, grab = 0, req = 0, want = 0;
-  var split = document.getElementById("panesplit");
-  function railPx() { return parseFloat(getComputedStyle(root).getPropertyValue("--rail")) || 30; }
-  function apply(px) {
-    var max = Math.max(200, window.innerWidth - railPx() - 420);
-    root.style.setProperty("--pane", Math.min(max, Math.max(200, px)) + "px");
-  }
-  var saved = parseFloat(get("sloop.pane"));
-  if (isFinite(saved)) apply(saved);
-  split.addEventListener("pointerdown", function (ev) {
-    on = true; body.classList.add("dragpanel");
-    grab = ev.clientX - split.getBoundingClientRect().left;
-    /* xterm refits and resizes its pty on every width change, so it is frozen for the drag */
-    if (termFrame) termFrame.style.width = termFrame.getBoundingClientRect().width + "px";
-    split.setPointerCapture(ev.pointerId); ev.preventDefault();
-  });
-  split.addEventListener("pointermove", function (ev) {
-    if (!on) return;
-    want = ev.clientX - grab - railPx();
-    if (req) return;
-    req = requestAnimationFrame(function () { req = 0; apply(want); });
-  });
-  function stop() {
-    if (!on) return;
-    on = false;
-    if (req) { cancelAnimationFrame(req); req = 0; }
-    body.classList.remove("dragpanel");
-    if (termFrame) termFrame.style.width = "";
-    set("sloop.pane", String(parseFloat(getComputedStyle(root).getPropertyValue("--pane")) || 0));
-  }
-  /* every way a drag can end without the splitter hearing */
-  split.addEventListener("pointerup", stop);
-  split.addEventListener("pointercancel", stop);
-  split.addEventListener("lostpointercapture", stop);
-  addEventListener("pointerup", stop);
-  addEventListener("blur", stop);
-  addEventListener("pointermove", function (ev) { if (on && !ev.buttons) stop(); });
-  document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); });
+    var backTo = null;                      /* the last ordinary page, for leaving a paper */
+    var want = null;                        /* a doi waiting for the list to come up */
+    function primeBox() {
+      if (!want) return;
+      var box = document.getElementById("libdoi"), say = document.getElementById("libsay");
+      if (box) {
+        box.value = want.doi;
+        if (say) {
+          say.className = "libsay";
+          say.textContent = want.doi
+            ? "no pdf for " + want.key + ". Its doi is in the box, or add the pdf."
+            : "no pdf for " + want.key + ", and no doi on record.";
+        }
+        if (want.doi) box.focus();
+      }
+      want = null;
+    }
+    var navs = [].slice.call(rail.querySelectorAll(".navbtn"));
+    var scratches = [].slice.call(rail.querySelectorAll(".scratchbtn"));
+    function reflect() {
+      var lib = body.classList.contains("libview");
+      navs.forEach(function (b) {
+        b.setAttribute("aria-checked", String((b.getAttribute("data-view") === "library") === lib));
+      });
+      scratches.forEach(function (b) {
+        b.setAttribute("aria-pressed", String(here() === MOUNT + b.getAttribute("data-slug") + "/"));
+      });
+    }
+    function setLib(open) {
+      body.classList.toggle("libview", open);
+      set("sloop.libview", open ? "1" : "0");
+      if (open) { setOpen(true, false); primeBox(); }
+      else if (body.classList.contains("paperview")) go(backTo || MOUNT);
+      if (!open && body.classList.contains("paneopen")) ensureTerm();
+      reflect();
+    }
+    /* after every navigation: a paper page hands its notes to the pane, a stub for a paper
+       with no pdf primes the import box, and anything else is an ordinary page */
+    function lift() {
+      var pp = document.querySelector("#main .paperpage");
+      if (pp) {
+        var n = pp.querySelector(".papernotes");
+        document.getElementById("notesbody").innerHTML = n ? n.innerHTML : "";
+        document.getElementById("notestitle").textContent =
+          pp.getAttribute("data-title") || pp.getAttribute("data-key") || "";
+        body.classList.add("libview", "paperview");
+        set("sloop.libview", "1");
+        setOpen(true, false);
+        reflect();
+        return;
+      }
+      body.classList.remove("paperview");
+      var stub = document.querySelector("#main .nopdf");
+      if (stub) {
+        want = { key: stub.getAttribute("data-key") || "", doi: stub.getAttribute("data-doi") || "" };
+        setLib(true);
+        return;
+      }
+      backTo = location.href;
+      if (body.classList.contains("paneopen") && !body.classList.contains("libview")) ensureTerm();
+      reflect();
+    }
+    navs.forEach(function (b) {
+      b.addEventListener("click", function () {
+        var lib = b.getAttribute("data-view") === "library";
+        if (lib === body.classList.contains("libview")) { setOpen(true); return; }
+        setLib(lib);                        /* leaving the library also closes any paper */
+        if (!lib) focusTerm();
+      });
+    });
+    scratches.forEach(function (b) {
+      b.addEventListener("click", function () {
+        var to = MOUNT + b.getAttribute("data-slug") + "/";
+        go(here() === to ? MOUNT : to);
+      });
+    });
+    document.getElementById("notesback").addEventListener("click", function () {
+      go(backTo || MOUNT);                  /* the paper closes, the list stays */
+    });
 
-  document.getElementById("notesback").addEventListener("click", function () {
-    location.hash = backTo;               /* the paper closes, the list stays */
-  });
+    /* ---- dragging the pane ---- */
+    var on = false, grab = 0, req = 0, px = 0;
+    var split = document.getElementById("panesplit");
+    function railPx() { return parseFloat(getComputedStyle(root).getPropertyValue("--rail")) || 30; }
+    function apply(v) {
+      var max = Math.max(200, window.innerWidth - railPx() - 420);
+      root.style.setProperty("--pane", Math.min(max, Math.max(200, v)) + "px");
+    }
+    var saved = parseFloat(get("sloop.pane"));
+    if (isFinite(saved)) apply(saved);
+    split.addEventListener("pointerdown", function (ev) {
+      on = true; body.classList.add("dragpanel");
+      grab = ev.clientX - split.getBoundingClientRect().left;
+      /* xterm refits and resizes its pty on every width change, so it is frozen for the drag */
+      if (termFrame) termFrame.style.width = termFrame.getBoundingClientRect().width + "px";
+      split.setPointerCapture(ev.pointerId); ev.preventDefault();
+    });
+    split.addEventListener("pointermove", function (ev) {
+      if (!on) return;
+      px = ev.clientX - grab - railPx();
+      if (req) return;
+      req = requestAnimationFrame(function () { req = 0; apply(px); });
+    });
+    function stop() {
+      if (!on) return;
+      on = false;
+      if (req) { cancelAnimationFrame(req); req = 0; }
+      body.classList.remove("dragpanel");
+      if (termFrame) termFrame.style.width = "";
+      set("sloop.pane", String(parseFloat(getComputedStyle(root).getPropertyValue("--pane")) || 0));
+    }
+    /* every way a drag can end without the splitter hearing */
+    split.addEventListener("pointerup", stop);
+    split.addEventListener("pointercancel", stop);
+    split.addEventListener("lostpointercapture", stop);
+    addEventListener("pointerup", stop);
+    addEventListener("blur", stop);
+    addEventListener("pointermove", function (ev) { if (on && !ev.buttons) stop(); });
+    document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); });
 
-  if (get("sloop.paneopen") === "1") setOpen(true, false);
-  if (get("sloop.libview") === "1") body.classList.add("libview");
-  view();
-})();
-</script>
-<script>
-(function () {
-  /* The library's import controls. They exist only where the server answers them, which is
-     the same rule the editor follows, so a static copy shows nothing. */
-  function wire() {
+    if (get("sloop.paneopen") === "1") setOpen(true, false);
+    if (get("sloop.libview") === "1") body.classList.add("libview");
+    hooks.push(lift);
+  })();
+
+  /* ---- the library's import controls ---- */
+  (function () {
     var form = document.getElementById("libadd");
-    if (!form || form.dataset.wired) return;
-    form.dataset.wired = "1";
-    var base = location.pathname.replace(/[^/]*$/, "");
+    if (!form) return;
     var doi = document.getElementById("libdoi");
     var say = document.getElementById("libsay");
     var file = document.getElementById("libpdf");
-
     function tell(msg, bad) { say.textContent = msg; say.className = "libsay" + (bad ? " err" : ""); }
-    function post(url, body, type) {
+    function post(url, payload, type) {
       var h = type ? { "Content-Type": type } : {};
-      return fetch(base + url, { method: "POST", headers: h, body: body })
+      return fetch(MOUNT + url, { method: "POST", headers: h, body: payload })
         .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); });
     }
-
-    document.getElementById("libdoibtn").addEventListener("click", function () {
-      var v = doi.value.trim();
-      if (!v) return;
-      tell("asking doi.org");
-      post("library/doi", JSON.stringify({ doi: v }), "application/json")
-        .then(function (res) {
-          if (!res[0]) throw new Error(res[1].error);
-          doi.value = "";
-          tell(res[1].key + " " + res[1].note + ". Add its pdf to have it read.");
-        })
-        .catch(function (e) { tell(String(e.message || e), true); });
-    });
-    doi.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); document.getElementById("libdoibtn").click(); }
-    });
-
-    function send(f) {
-      var key = f.name.replace(/\.pdf$/i, "").replace(/[^A-Za-z0-9_.-]+/g, "");
-      if (!key) { tell("that filename has no usable key in it", true); return Promise.resolve(); }
-      tell("uploading " + key);
-      return post("library/pdf/" + encodeURIComponent(key), f, "application/pdf")
-        .then(function (res) {
-          if (!res[0]) throw new Error(res[1].error);
-          tell(key + " is being read. It appears here when it is done.");
-        })
-        .catch(function (e) { tell(key + ": " + String(e.message || e), true); });
-    }
-    file.addEventListener("change", function () {
-      var fs = [].slice.call(file.files);
-      file.value = "";
-      fs.reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
-    });
-
-    /* the whole page takes a drop, since the target is otherwise a small word */
-    ["dragover", "drop"].forEach(function (t) {
-      document.addEventListener(t, function (e) {
-        if (!e.dataTransfer || [].indexOf.call(e.dataTransfer.types, "Files") < 0) return;
-        e.preventDefault();
-        if (t !== "drop") return;
-        [].slice.call(e.dataTransfer.files)
-          .filter(function (f) { return /\.pdf$/i.test(f.name); })
-          .reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
+    function wire() {
+      document.getElementById("libdoibtn").addEventListener("click", function () {
+        var v = doi.value.trim();
+        if (!v) return;
+        tell("asking doi.org");
+        post("library/doi", JSON.stringify({ doi: v }), "application/json")
+          .then(function (res) {
+            if (!res[0]) throw new Error(res[1].error);
+            doi.value = "";
+            tell(res[1].key + " " + res[1].note + ". Add its pdf to have it read.");
+          })
+          .catch(function (e) { tell(String(e.message || e), true); });
       });
-    });
-  }
-  fetch(location.pathname.replace(/[^/]*$/, "") + "edit/", { cache: "no-store" })
-    .then(function (r) { if (r.ok) { wire(); addEventListener("hashchange", wire); } })
-    .catch(function () {});
+      doi.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); document.getElementById("libdoibtn").click(); }
+      });
+      function send(f) {
+        var key = f.name.replace(/\.pdf$/i, "").replace(/[^A-Za-z0-9_.-]+/g, "");
+        if (!key) { tell("that filename has no usable key in it", true); return Promise.resolve(); }
+        tell("uploading " + key);
+        return post("library/pdf/" + encodeURIComponent(key), f, "application/pdf")
+          .then(function (res) {
+            if (!res[0]) throw new Error(res[1].error);
+            tell(key + " is being read. It appears here when it is done.");
+          })
+          .catch(function (e) { tell(key + ": " + String(e.message || e), true); });
+      }
+      file.addEventListener("change", function () {
+        var fs = [].slice.call(file.files);
+        file.value = "";
+        fs.reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
+      });
+      /* the whole page takes a drop, since the target is otherwise a small icon */
+      ["dragover", "drop"].forEach(function (t) {
+        document.addEventListener(t, function (e) {
+          if (!e.dataTransfer || [].indexOf.call(e.dataTransfer.types, "Files") < 0) return;
+          e.preventDefault();
+          if (t !== "drop") return;
+          [].slice.call(e.dataTransfer.files)
+            .filter(function (f) { return /\.pdf$/i.test(f.name); })
+            .reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
+        });
+      });
+    }
+    editOn.then(function (ok) { if (ok) wire(); else form.hidden = true; });
+  })();
+
+  after();
 })();
-</script>
 """

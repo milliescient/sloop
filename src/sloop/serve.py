@@ -105,6 +105,22 @@ def spawn_librarian(key):
                      start_new_session=True)
 
 
+def install(src, dst):
+    """Make the served tree match a finished build: copy everything over, then drop what the
+    build no longer has. Nothing is ever missing from dst in between, so a request that
+    lands mid-rebuild still answers."""
+    src, dst = Path(src), Path(dst)
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    keep = {p.relative_to(src) for p in src.rglob("*")}
+    for p in sorted(dst.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if p.relative_to(dst) in keep:
+            continue
+        if p.is_file():
+            p.unlink()
+        elif p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     edit = False
     flags = []
@@ -194,6 +210,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         # the library's pdfs live beside the pages, not in the build output: one copy on disk
         path = self.path.split("?")[0]
+        # A page is a directory, and a request for it without the slash gets a redirect. The
+        # standard one is absolute, which loses any path the site is mounted under, so this
+        # one is relative to the request and survives the mount.
+        if (not path.endswith("/") and "." not in Path(path).name and ".." not in path.split("/")
+                and (Path(self.directory) / path.lstrip("/") / "index.html").is_file()):
+            self.send_response(301)
+            self.send_header("Location", Path(path).name + "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path.startswith("/library/pdf/") and path.endswith(".pdf"):
             name = Path(path).name
             f = ROOT / "library" / "pdf" / name
@@ -289,9 +315,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     f.write_text(old)
                     return self.reply(422, {"error": log[-2000:] or "the build failed"})
-                shutil.copy(Path(tmp) / "index.html", Path(self.directory) / "index.html.new")
-                (Path(self.directory) / "index.html.new").replace(
-                    Path(self.directory) / "index.html")
+                install(tmp, self.directory)
                 Handler.announce()
         self.reply(200, {"hash": digest(text)})
 
@@ -335,8 +359,7 @@ def watch(root, conf, site, flags, interval=1.0):
             if not ok:
                 print(log[-2000:] or "the build failed", flush=True)
                 continue
-            shutil.copy(Path(tmp) / "index.html", site / "index.html.new")
-            (site / "index.html.new").replace(site / "index.html")
+            install(tmp, site)
             Handler.announce()
             print("  " + (log.strip().splitlines() or [""])[-1], flush=True)
 

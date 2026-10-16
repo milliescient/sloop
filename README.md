@@ -1,6 +1,6 @@
 # sloop
 
-A lab notebook as one self-contained HTML page: dated entries of prose whose numbers come
+A lab notebook as a static site: dated entries of prose whose numbers come
 from the scripts that produced them, each entry recording what it ran, at which version, and
 the hash of everything it read and wrote.
 
@@ -27,7 +27,7 @@ That puts `sloop` on the path, with `notebook` as an alias.
 
     sloop init my-notebook              # notebook.yml and pages/
     sloop new starving-column "A title" # a page, dated
-    sloop build                         # render it into site/index.html
+    sloop build                         # render it into site/, a page per entry
     sloop serve                         # build, serve on localhost, rebuild as pages change
     sloop status [PAGE]                 # where each step stands; runs checks and no steps
     sloop make PAGE [STEP]              # run what is stale, in order; a frozen step only by name

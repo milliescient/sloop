@@ -328,7 +328,8 @@ class Page:
                 self.cited.append(key)
             # a citation goes to the paper in the library, not to the reference list at the
             # foot of the page: the library is where the pdf and the notes are
-            href = f'href="#/paper/{html.escape(key)}"'
+            href = (f'href="@@ROOT@@library/{html.escape(key)}/" '
+                    f'data-rootlink="library/{html.escape(key)}/"')
             if how == "text":
                 return f'<a class="cite" {href}>{html.escape(self.bib.names(key))} ({self.bib.year(key)})</a>'
             return f'<a class="cite" {href}>{html.escape(self.bib.names(key))} {self.bib.year(key)}</a>'
