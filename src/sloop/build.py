@@ -29,6 +29,7 @@ Routes: #/ everything, #/tag/<tag> filtered, #/entry/<slug>.
 
 Writes one self-contained page to site/index.html, which works at any mount path.
 """
+import json
 import html
 import re
 import subprocess
@@ -162,7 +163,8 @@ def is_draft(path):
     for parse() to report rather than raising here."""
     head, _, _ = path.read_text().partition("\n---\n")
     try:
-        return bool((yaml.safe_load(head) or {}).get("draft", False))
+        h = yaml.safe_load(head) or {}
+        return bool(h.get("draft", False) or h.get("scratch", False))
     except yaml.YAMLError:
         return False
 
@@ -174,9 +176,12 @@ def parse(path):
         meta = yaml.safe_load(head) or {}
     except yaml.YAMLError as e:
         raise SystemExit(f"{name}: header is not valid YAML\n  {e}")
-    missing = [k for k in META_KEYS if k not in meta]
+    # a scratch page carries no tags, so it is not held to them
+    required = [k for k in META_KEYS if k != "tags" or not meta.get("scratch")]
+    missing = [k for k in required if k not in meta]
     if missing:
         raise SystemExit(f"{name}: missing {', '.join(missing)}")
+    meta.setdefault("tags", [])
     meta["tags"] = [str(x).strip() for x in meta["tags"]] if isinstance(meta["tags"], list) \
         else [t.strip() for t in str(meta["tags"]).split(",") if t.strip()]
     meta["date"] = str(meta["date"])
@@ -186,10 +191,13 @@ def parse(path):
         meta["body"] = page.render(body.strip()) if path.suffix == ".md" else page.fill(body.strip())
     except R.Failure as e:
         raise SystemExit(f"{name}: {e}")
-    meta["draft"] = bool(meta.get("draft", False))
+    # a scratch page is reachable and never listed: no index row, no tag or date counts,
+    # and never published
+    meta["scratch"] = bool(meta.get("scratch", False))
+    meta["draft"] = bool(meta.get("draft", False)) or meta["scratch"]
     meta["slug"] = name
     meta["path"] = str(path)
-    if not meta["tags"]:
+    if not meta["tags"] and not meta["scratch"]:
         raise SystemExit(f"{name}: needs at least one tag")
     return meta
 
@@ -304,6 +312,100 @@ def sidebar_sources(rows):
     return sorted(listed, key=lambda r: r[1] == "namesake")
 
 
+
+def library_markup():
+    """The reading library, rendered into the pane rather than into a page.
+
+    Every key in references.bib with a pdf beside it is a paper. The pane lists them, and
+    picking one puts its notes there and its pdf in the main area. There is no bibliography
+    page: the citation list is a way to reach a paper, not somewhere to read.
+    """
+    refs = BIB.load()
+    if not refs:
+        return None
+    lib = ROOT / "library"
+    pdfs = {f.stem for f in (lib / "pdf").glob("*.pdf")} if (lib / "pdf").is_dir() else set()
+    notes = {}
+    for f in lib.glob("*.json") if lib.is_dir() else []:
+        try:
+            notes[f.stem] = json.loads(f.read_text())
+        except (ValueError, OSError):
+            notes[f.stem] = {"error": f"{f.name} could not be read"}
+
+    def notes_html(key):
+        n = notes.get(key) or {}
+        out = ""
+        if n.get("one_line"):
+            out += f'<p class="libone">{html.escape(str(n["one_line"]))}</p>'
+        if n.get("summary"):
+            out += f'<p>{html.escape(str(n["summary"]))}</p>'
+        pts = n.get("points") or []
+        if pts:
+            out += "<h4>Points</h4><ul>" + "".join(
+                f"<li>{html.escape(str(x))}</li>" for x in pts) + "</ul>"
+        if n.get("age_uncertainty"):
+            out += f'<h4>Age uncertainty</h4><p>{html.escape(str(n["age_uncertainty"]))}</p>'
+        con = n.get("connection") or []
+        if con:
+            out += "<h4>Connection</h4><ul>" + "".join(
+                f"<li>{html.escape(str(x))}</li>" for x in con) + "</ul>"
+        for q in (n.get("quotes") or [])[:3]:
+            where = f' <span class="qwhere">{html.escape(str(q.get("where", "")))}</span>' if q.get("where") else ""
+            out += f'<blockquote>{html.escape(str(q.get("text", "")))}{where}</blockquote>'
+        if n.get("status") == "reading":
+            out = "<p>Being read now. This fills in when it is done.</p>"
+        elif n.get("error"):
+            out = f'<p class="liberr">{html.escape(str(n["error"]))}</p>'
+        return out or "<p>Nothing written yet.</p>"
+
+    def row(key):
+        n = notes.get(key) or {}
+        has_pdf = key in pdfs
+        head = (f'<a class="libpdf" href="library/pdf/{html.escape(key)}.pdf" '
+                f'target="_blank" rel="noreferrer">pdf</a>' if has_pdf
+                else '<span class="libpdf none">no pdf</span>')
+        one = f'<p class="libone">{html.escape(str(n["one_line"]))}</p>' if n.get("one_line") else ""
+        body = ""
+        if n.get("summary"):
+            body += f'<p>{html.escape(str(n["summary"]))}</p>'
+        for pt in (n.get("points") or [])[:8]:
+            body += f'<li>{html.escape(str(pt))}</li>'
+        if body and "<li>" in body:
+            body = body.replace("<li>", "<ul><li>", 1) + "</ul>"
+        if not has_pdf:
+            return ""
+        title = str((refs.get(key) or {}).get("title") or key)
+        return (f'<a class="librow" href="#/paper/{html.escape(key)}">'
+                f'<span class="libwho">{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}</span>'
+                f'<span class="libtitle">{html.escape(title.rstrip("."))}</span>'
+                + (f'<span class="libone">{html.escape(str(n["one_line"]))}</span>' if n.get("one_line")
+                   else ' <span class="libstate">unread</span>')
+                + '</a>')
+
+    order = sorted(refs, key=lambda k: (str(refs[k].get("year") or ""), k), reverse=True)
+    rows = "".join(row(k) for k in order)
+    # every paper's notes, kept out of the flow: the notes panel shows one at a time
+    store = "".join(
+        f'<div class="papernotes" id="pn-{html.escape(k)}" data-title="{html.escape(BIB.names(k))} '
+        f'{html.escape(BIB.year(k))}" data-pdf="{"1" if k in pdfs else ""}">{notes_html(k)}</div>'
+        for k in order)
+    n_pdf = len(pdfs & set(refs))
+    up = ('<svg viewBox="0 0 14 14" width="13" height="13" fill="none" aria-hidden="true">'
+          '<path d="M7 9.5V2.5M7 2.5 4.2 5.3M7 2.5l2.8 2.8" stroke="currentColor"'
+          ' stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+          '<path d="M2.2 10v1.8h9.6V10" stroke="currentColor" stroke-width="1.3"'
+          ' stroke-linecap="round"/></svg>')
+    lead = ('<form class="libadd" id="libadd" onsubmit="return false">'
+            '<input id="libdoi" type="text" placeholder="paste a doi" autocomplete="off">'
+            '<button id="libdoibtn" type="button">cite</button>'
+            f'<label class="libdrop" for="libpdf" title="add a pdf">{up}</label>'
+            '<input id="libpdf" type="file" accept="application/pdf" multiple hidden>'
+            '</form><p class="libsay" id="libsay"></p>'
+            f'<p class="libcount">{n_pdf} papers of {len(refs)} citations.</p>')
+    return (f'<div id="liblist">{lead}{rows}</div>'
+            f'<div id="pnstore" hidden>{store}</div>')
+
+
 def build(site=None, drafts=True):
     files = sorted(p for d in sorted(PAGES.iterdir()) if d.is_dir()
                    for p in (d / "page.md", d / "page.html") if p.exists())
@@ -332,10 +434,11 @@ def build(site=None, drafts=True):
         raise SystemExit("not published. These pages are provisional, and none is marked "
                          f"draft:{lines}")
     recent = sorted(entries, key=lambda e: (e["stamp"], e["slug"]), reverse=True)
-    counts = Counter(t for e in entries for t in e["tags"])
+    listed = [e for e in entries if not e["scratch"]]
+    counts = Counter(t for e in listed for t in e["tags"])
     rows = read_sources()
 
-    months = Counter(e["date"][:7] for e in entries)
+    months = Counter(e["date"][:7] for e in listed)
     dates = "".join(
         f'<button class="tag" data-date="{m}" aria-pressed="false">'
         f'<span>{MONTHS[int(m[5:7])]} {m[:4]}</span><span class="n">{n}</span></button>'
@@ -346,15 +449,45 @@ def build(site=None, drafts=True):
         f'<span>{html.escape(t)}</span><span class="n">{n}</span></button>'
         for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
+    scratch = "".join(
+        f'<a class="scratchlink" href="#/entry/{e["slug"]}">{html.escape(e["title"])}</a>'
+        for e in recent if e["scratch"])
+
+    scratch_slug = next((e["slug"] for e in recent if e["scratch"]), "")
+    panes = [r for r in ((CONF.get("serve") or {}).get("panes") or []) if r.get("url")]
+    term = next((r for r in panes if r.get("label") == "terminal"), None)
+    LIB = library_markup()
+    rail = (
+        '<div id="rail">'
+        '<button id="panebtn" aria-pressed="false" title="pane  ctrl+`">'
+        '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">'
+        '<path d="M3.5 1.5 L8 6 L3.5 10.5" stroke="currentColor" stroke-width="1.6"'
+        ' stroke-linecap="round" stroke-linejoin="round"/></svg></button>'
+        + ('<button class="routebtn" id="libbtn" aria-pressed="false" data-hash="#/library"'
+           ' title="library">library</button>' if LIB else "")
+        + "".join(
+            f'<button class="routebtn" aria-pressed="false" data-hash="#/entry/{html.escape(e["slug"])}"'
+            f' title="{html.escape(e["title"])}">{html.escape(e["title"].lower())}</button>'
+            for e in recent if e["scratch"])
+        + '</div>'
+        f'<div id="pane" data-term="{html.escape(str(term["url"])) if term else ""}">'
+        '<div id="termbody"></div>'
+        '<div id="libwrap"><div id="notesbar"><span id="notestitle"></span>'
+        '<a id="notesback" href="#/library" title="back to the papers">&#8592;</a></div>'
+        f'<div id="libbody">{LIB}<div id="notesbody"></div></div></div></div>'
+        '<div id="panesplit" role="separator" tabindex="0" aria-label="resize"></div>'
+        '<div id="paperwrap"><iframe id="paper" title="paper"></iframe></div>')
+
     toc = ""
     body = ""
     for e in recent:
-        toc += (
-            f'<a class="tocrow" href="#/entry/{e["slug"]}" '
-            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
-            f'title="{html.escape(e["title"])}">'
-            f'<span class="toctitle">{html.escape(e["title"])}</span>'
-            f'<span class="tocdate">{e["updated"]}</span></a>')
+        if not e["scratch"]:
+            toc += (
+                f'<a class="tocrow" href="#/entry/{e["slug"]}" '
+                f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
+                f'title="{html.escape(e["title"])}">'
+                f'<span class="toctitle">{html.escape(e["title"])}</span>'
+                f'<span class="tocdate">{e["updated"]}</span></a>')
         tags = "".join(
             f'<button class="tag sm" data-tag="{html.escape(t)}" aria-pressed="false">'
             f'{html.escape(t)}</button>' for t in e["tags"])
@@ -397,7 +530,8 @@ def build(site=None, drafts=True):
         for n, u in listed)
 
     page = Template(TEMPLATE).safe_substitute(
-        title=TITLE, filters=filters, dates=dates, toc=toc, entries=body, sources=srcs,
+        title=TITLE, filters=filters, dates=dates, toc=toc, entries=body, scratch=scratch, rail=rail,
+        sources=srcs,
         n=len(entries), latest=recent[0]["updated"],
         )
     emit(page, site)
@@ -477,7 +611,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
 
   .topbar { position:sticky; top:0; z-index:5; background:var(--ground);
     border-bottom:1px solid var(--rule); }
-  .topbar .inner { max-width:82rem; margin:0 auto; padding:var(--s2) var(--s3);
+  .topbar .inner { max-width:92rem; margin:0 auto; padding:var(--s2) var(--s3);
     display:grid; grid-template-columns:12rem minmax(0,1fr) 11rem; gap:var(--s5); }
   .topbar .head { grid-column:2; display:flex; flex-direction:column; gap:.15rem;
     max-width:var(--measure); }
@@ -492,10 +626,125 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   .provenance a:hover { text-decoration:underline; }
 
   .shell { display:grid; grid-template-columns:12rem minmax(0,1fr) 11rem; gap:var(--s5);
-    max-width:82rem; margin:0 auto; padding:var(--s4) var(--s3) var(--s5); align-items:start; }
+    max-width:92rem; margin:0 auto; padding:var(--s4) var(--s3) var(--s5); align-items:start; }
   .side { position:sticky; top:6.4rem; display:flex; flex-direction:column; gap:var(--s2);
     max-height:calc(100vh - 8rem); overflow-y:auto; }
+
+  /* Two views over one pane and one main area. The notebook view pairs the terminal with
+     the pages, the paper view pairs the notes with the pdf, and collapsing the pane gives
+     whatever is in the main area the full width either way. */
+  :root { --rail:30px; --pane:26rem; --shellbg:#1c1b19; }
+  body:has(#rail) { padding-left:var(--rail); }
+  body:has(#rail).paneopen { padding-left:calc(var(--rail) + var(--pane)); }
+  body.paperview #page { display:none; }
+
+  #rail { position:fixed; left:0; top:0; bottom:0; width:var(--rail); z-index:70;
+    background:var(--shellbg); display:flex; flex-direction:column; align-items:center;
+    gap:2px; padding-top:10px; }
+  #rail button { appearance:none; border:0; background:none; color:#6f6859; cursor:pointer;
+    width:100%; padding:6px 0; display:flex; align-items:center; justify-content:center;
+    transition:color .15s ease; }
+  #rail button:hover, #rail button:focus-visible { color:#ede7dc; outline:0; }
+  #panebtn svg { display:block; transition:transform .22s ease; }
+  body.paneopen #panebtn svg { transform:rotate(180deg); }
+  #rail .routebtn { font-family:var(--mono); font-size:.62rem; letter-spacing:.08em;
+    writing-mode:vertical-rl; padding:7px 0; }
+  #rail .routebtn[aria-pressed="true"] { color:#ede7dc; }
+  #rail .routebtn:first-of-type { margin-top:auto; }
+  #rail .routebtn:last-of-type { padding-bottom:12px; }
+
+  #pane { position:fixed; left:var(--rail); top:0; bottom:0; width:0; z-index:65;
+    overflow:hidden; background:var(--shellbg); visibility:hidden; }
+  body.paneopen #pane { width:var(--pane); visibility:visible; }
+  #termbody, #libwrap { position:absolute; inset:0; display:none; }
+  body:not(.libview) #termbody { display:block; }
+  body.libview #libwrap { display:flex; flex-direction:column; background:var(--panel); }
+  body.libview #termbody { display:none; }
+  #termbody iframe { width:100%; height:100%; border:0; display:block; }
+  #notesbar { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between;
+    gap:var(--s2); padding:var(--s2) var(--s3) var(--s1); border-bottom:1px solid var(--rule); }
+  #notestitle { font-family:var(--mono); font-size:.68rem; letter-spacing:.06em; color:var(--muted); }
+  #notesback { color:var(--muted); text-decoration:none; font-size:.9rem; }
+  #notesback:hover { color:var(--accent); }
+  #libbody { flex:1; min-height:0; overflow-y:auto; padding:var(--s2) var(--s3) var(--s4);
+    font-size:.92rem; color:var(--ink); }
+  body.paperview #liblist, body:not(.paperview) #notesbody { display:none; }
+  body:not(.paperview) #notesbar { visibility:hidden; height:0; padding:0; border:0; }
+  .librow { display:block; text-decoration:none; color:inherit; padding:var(--s2) 0;
+    border-bottom:1px solid var(--rule); }
+  .librow:hover { background:var(--ground, rgba(0,0,0,.03)); }
+  .libwho { display:block; font-family:var(--mono); font-size:.64rem; letter-spacing:.05em;
+    color:var(--muted); }
+  .libtitle { display:block; color:var(--ink); }
+  .libone { display:block; color:var(--muted); font-size:.86rem; margin-top:.15rem; }
+  /* the import row reads as one of the rows, not as a form pasted above them */
+  .libadd { display:flex; align-items:center; gap:var(--s2); padding:var(--s2) 0;
+    border-bottom:1px solid var(--rule); }
+  .libadd input[type=text] { flex:1; min-width:0; border:0; background:none; padding:0;
+    font-family:var(--mono); font-size:.64rem; letter-spacing:.05em; color:var(--ink); }
+  .libadd input[type=text]::placeholder { color:var(--muted); }
+  .libadd input[type=text]:focus { outline:0; }
+  .libadd button, .libdrop { font-family:var(--mono); font-size:.64rem; letter-spacing:.05em;
+    border:0; background:none; padding:0; color:var(--muted); cursor:pointer;
+    display:flex; align-items:center; }
+  .libadd button:hover, .libdrop:hover { color:var(--accent); }
+  .libdrop svg { display:block; }
+  .libsay { font-family:var(--mono); font-size:.62rem; letter-spacing:.04em; color:var(--muted);
+    margin:var(--s1) 0 0; min-height:1em; }
+  .libsay.err { color:var(--oxide, var(--accent)); }
+  .libcount { font-family:var(--mono); font-size:.62rem; letter-spacing:.04em;
+    color:var(--muted); margin:.2rem 0 var(--s2); }
+  #notesbody { }
+  #notesbody h4 { font-family:var(--mono); font-size:.64rem; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin:var(--s2) 0 .3rem; }
+  #notesbody ul { padding-left:1.1em; }
+  #notesbody blockquote { border-left:2px solid var(--rule); margin:var(--s1) 0; padding-left:.8em;
+    color:var(--muted); }
+  #notesbody .qwhere { font-family:var(--mono); font-size:.62rem; }
+
+  #panesplit { position:fixed; top:0; bottom:0; width:6px; z-index:66; cursor:col-resize;
+    background:#35322d; left:var(--rail); display:none; touch-action:none; }
+  body.paneopen #panesplit { display:block; left:calc(var(--rail) + var(--pane)); }
+  #panesplit::before { content:""; position:absolute; inset:0 -7px; }
+  #panesplit::after { content:""; position:absolute; top:50%; left:50%; width:2px; height:28px;
+    margin:-14px 0 0 -1px; border-radius:2px; background:#5f594e; }
+
+  /* an iframe is a replaced element, so width:auto takes its intrinsic 300x150 rather than
+     stretching to the insets. The wrapper is what gets positioned. */
+  #paperwrap { position:fixed; left:var(--rail); right:0; top:0; bottom:0; z-index:40;
+    display:none; background:var(--panel); }
+  body.paneopen #paperwrap { left:calc(var(--rail) + var(--pane)); }
+  body.paperview #paperwrap { display:block; }
+  #paperwrap iframe { width:100%; height:100%; border:0; display:block; }
+  body.dragpanel { cursor:col-resize; user-select:none; }
+  body.dragpanel iframe { pointer-events:none; }
+
+  /* the tag and date rail is not worth the width while the pane is open. Three tracks are
+     kept and the first zeroed rather than dropped: .topbar .head sits in column 2 explicitly,
+     so two tracks would land the title in the sources rail. */
+  @container page (min-width:70.01rem) {
+    body.paneopen .shell > aside.side:not(.right) { visibility:hidden; }
+    body.paneopen .shell, body.paneopen .topbar .inner {
+      grid-template-columns:0 minmax(0,1fr) 11rem; }
+  }
+  @container page (max-width:70rem) {
+    body.paneopen .shell > aside.side:not(.right) { display:none; }
+  }
+  /* The pane narrows the page without narrowing the window, so the stacking point has to be
+     the space actually left rather than the viewport. The container sits inside body so the
+     fixed rail is not caught by its containment. */
+  #page { container-type:inline-size; container-name:page; }
+
+  .libopen { font-family:var(--mono); font-size:.66rem; letter-spacing:.06em;
+    color:var(--accent); text-decoration:none; }
+  .libopen:hover { text-decoration:underline; }
+  .liberr { color:var(--oxide, var(--accent)); }
   .filterhead { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s2); }
+  /* a scratch page is reachable but unlisted, so the sidebar is the only way in */
+  .scratchlink { display:block; font-family:var(--mono); font-size:.72rem; letter-spacing:.04em;
+    color:var(--muted); text-decoration:none; padding-bottom:var(--s2);
+    border-bottom:1px solid var(--rule); margin-bottom:var(--s1); }
+  .scratchlink:hover { color:var(--accent); }
   .filters { display:flex; flex-direction:column; gap:.2rem; }
   .main { min-width:0; display:flex; flex-direction:column; gap:var(--s4); }
   /* the measure is on the text an entry holds, so its footer can run wider */
@@ -655,7 +904,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
 
   /* Below this the three rails stack. The page is built for a desktop reading width and
      is not otherwise tuned for small screens. */
-  @media (max-width:70rem) {
+  @container page (max-width:70rem) {
     .shell, .topbar .inner { grid-template-columns:minmax(0,1fr); gap:var(--s3); }
     .topbar .inner { gap:0; }
     .topbar .head { grid-column:1; }
@@ -693,6 +942,8 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style>
 
+$rail
+<div id="page">
 <header class="topbar">
   <div class="inner">
     <div class="head">
@@ -707,6 +958,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
 
 <div class="shell">
   <aside class="side">
+    $scratch
     <div class="filterhead">
       <p class="label">Tags</p>
       <button id="reset" type="button">clear</button>
@@ -734,6 +986,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     <p class="label">Sources</p>
     <div class="sources">$sources</div>
   </aside>
+</div>
 </div>
 
 
@@ -796,6 +1049,7 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
     var parts = (location.hash || "#/").replace(/^#\/?/, "").split("/").filter(Boolean);
     tags.clear(); months.clear(); only = null;
 
+    if (parts[0] === "paper" && parts[1]) { return; }   // the paper panels own this route
     if (parts[0] === "entry" && parts[1]) {
       only = decodeURIComponent(parts[1]);
       paint();
@@ -919,6 +1173,278 @@ TEMPLATE = r"""<meta name="robots" content="noindex, nofollow, noarchive, nosnip
       el.querySelector(".label").appendChild(b);
     });
   }).catch(function () {});
+})();
+</script>
+<script>
+(function () {
+  /* Live reload. The server announces a new build id after every successful rebuild, so a
+     page follows what is on disk without anyone refreshing. A static copy answers no such
+     endpoint, and this gives up rather than retrying at it forever. */
+  var base = location.pathname.replace(/[^/]*$/, "");
+  var id = null, held = false, fails = 0, es = null;
+
+  function editing() { return !!document.querySelector("dialog.editor[open]"); }
+
+  function reload() {
+    try { sessionStorage.setItem("sloop.scroll", String(window.scrollY)); } catch (e) {}
+    location.reload();
+  }
+
+  function arrived(data) {
+    if (id === null) { id = data; return; }   /* the id held at connect, not a change */
+    if (data === id) return;
+    id = data;
+    if (editing()) { held = true; return; }   /* never discard what is being typed */
+    reload();
+  }
+
+  /* take a held rebuild once the editor is out of the way */
+  setInterval(function () { if (held && !editing()) { held = false; reload(); } }, 500);
+
+  try {
+    var y = sessionStorage.getItem("sloop.scroll");
+    if (y !== null) {
+      sessionStorage.removeItem("sloop.scroll");
+      addEventListener("load", function () { window.scrollTo(0, parseFloat(y) || 0); });
+    }
+  } catch (e) {}
+
+  try { es = new EventSource(base + "live"); } catch (e) { return; }
+  es.onopen = function () { fails = 0; };
+  es.onmessage = function (ev) { arrived(ev.data); };
+  es.onerror = function () { if (++fails >= 3) es.close(); };
+})();
+</script>
+<script>
+(function () {
+  /* The companion pane. Its contents are someone else's problem: this only opens, closes,
+     sizes and focuses it. The frame has no src until first opened, so a reader who never
+     opens it never starts whatever is on the other end. */
+  var body = document.body, root = document.documentElement;
+  var rail = document.getElementById("rail");
+  if (!rail) return;
+  var pane = document.getElementById("pane");
+  var paper = document.getElementById("paper");
+  var btn = document.getElementById("panebtn");
+  var TERM = pane.dataset.term;
+
+  function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  /* the terminal frame is built once, the first time the pane is opened on the notebook
+     view, and then kept: switching to a paper and back must not drop what it is attached to */
+  var termFrame = null;
+  function ensureTerm() {
+    if (termFrame || !TERM) return;
+    termFrame = document.createElement("iframe");
+    termFrame.src = TERM;
+    termFrame.title = "terminal";
+    document.getElementById("termbody").appendChild(termFrame);
+  }
+  function xterm() {
+    try {
+      var d = termFrame && termFrame.contentDocument;
+      return d && d.querySelector(".xterm-helper-textarea");
+    } catch (e) { return null; }
+  }
+  function focusTerm() {
+    if (body.classList.contains("libview")) return;
+    var ta = xterm();
+    if (ta) ta.focus();
+    else if (termFrame) { try { termFrame.contentWindow.focus(); } catch (e) {} }
+  }
+
+  function setOpen(open, focus) {
+    body.classList.toggle("paneopen", open);
+    btn.setAttribute("aria-pressed", String(open));
+    set("sloop.paneopen", open ? "1" : "0");
+    if (!open) return;
+    if (!body.classList.contains("libview")) {
+      ensureTerm();
+      if (focus !== false) setTimeout(focusTerm, 240);
+    }
+  }
+  btn.addEventListener("click", function () { setOpen(!body.classList.contains("paneopen")); });
+  document.addEventListener("keydown", function (ev) {
+    if (!ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (ev.key !== "`" && ev.code !== "Backquote") return;
+    setOpen(!body.classList.contains("paneopen")); ev.preventDefault();
+  });
+
+  /* typing belongs to the terminal whenever it is the thing reading keys, so this does
+     nothing in the paper view and nothing while text is selected */
+  document.addEventListener("mouseup", function (ev) {
+    if (!body.classList.contains("paneopen") || !xterm()) return;
+    if (document.querySelector("dialog.editor[open]")) return;
+    var t = ev.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .editbtn, dialog.editor, #rail, #pane, #panesplit")) return;
+    var sel = document.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    focusTerm();
+  });
+
+  /* ---- the views ----
+     libview puts the library in the pane: the list of papers, or one paper's notes.
+     paperview additionally puts that paper's pdf in the main area. Neither is a page. */
+  function showPaper(key) {
+    var src = document.getElementById("pn-" + key);
+    if (!src || !src.dataset.pdf) return false;
+    document.getElementById("notesbody").innerHTML = src.innerHTML;
+    document.getElementById("notestitle").textContent = src.dataset.title || key;
+    paper.src = "library/pdf/" + encodeURIComponent(key) + ".pdf";
+    body.classList.add("libview", "paperview");
+    setOpen(true, false);                 /* a paper arrives with its notes beside it */
+    return true;
+  }
+  var routes = [].slice.call(rail.querySelectorAll(".routebtn"));
+  function reflect() {
+    var h = location.hash || "";
+    routes.forEach(function (b) {
+      var own = b.dataset.hash;
+      b.setAttribute("aria-pressed",
+        String(own === "#/library" ? /^#\/(library|paper\/)/.test(h) : h === own));
+    });
+  }
+  function view() {
+    var h = location.hash || "";
+    var m = h.match(/^#\/paper\/(.+)$/);
+    if (m && showPaper(decodeURIComponent(m[1]))) { reflect(); return; }
+    paper.removeAttribute("src");
+    body.classList.remove("paperview");
+    if (/^#\/library\/?$/.test(h) || m) {
+      body.classList.add("libview");      /* the list, with nothing chosen yet */
+      setOpen(true, false);
+      if (m) location.hash = "#/library";
+    } else {
+      body.classList.remove("libview");
+    }
+    /* the pane can be opened while the library holds it, so the terminal is built whenever
+       the notebook view actually has the pane rather than only when it opens it */
+    if (body.classList.contains("paneopen") && !body.classList.contains("libview")) ensureTerm();
+    reflect();
+  }
+  routes.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var want = b.dataset.hash;
+      location.hash = /^#\/(library|paper\/)/.test(location.hash || "") && want === "#/library"
+        ? "#/" : (location.hash === want ? "#/" : want);
+      setTimeout(function () { view(); focusTerm(); }, 30);
+    });
+  });
+  addEventListener("hashchange", view);
+
+  /* ---- dragging the pane ---- */
+  var on = false, grab = 0, req = 0, want = 0;
+  var split = document.getElementById("panesplit");
+  function railPx() { return parseFloat(getComputedStyle(root).getPropertyValue("--rail")) || 30; }
+  function apply(px) {
+    var max = Math.max(200, window.innerWidth - railPx() - 420);
+    root.style.setProperty("--pane", Math.min(max, Math.max(200, px)) + "px");
+  }
+  var saved = parseFloat(get("sloop.pane"));
+  if (isFinite(saved)) apply(saved);
+  split.addEventListener("pointerdown", function (ev) {
+    on = true; body.classList.add("dragpanel");
+    grab = ev.clientX - split.getBoundingClientRect().left;
+    /* xterm refits and resizes its pty on every width change, so it is frozen for the drag */
+    if (termFrame) termFrame.style.width = termFrame.getBoundingClientRect().width + "px";
+    split.setPointerCapture(ev.pointerId); ev.preventDefault();
+  });
+  split.addEventListener("pointermove", function (ev) {
+    if (!on) return;
+    want = ev.clientX - grab - railPx();
+    if (req) return;
+    req = requestAnimationFrame(function () { req = 0; apply(want); });
+  });
+  function stop() {
+    if (!on) return;
+    on = false;
+    if (req) { cancelAnimationFrame(req); req = 0; }
+    body.classList.remove("dragpanel");
+    if (termFrame) termFrame.style.width = "";
+    set("sloop.pane", String(parseFloat(getComputedStyle(root).getPropertyValue("--pane")) || 0));
+  }
+  /* every way a drag can end without the splitter hearing */
+  split.addEventListener("pointerup", stop);
+  split.addEventListener("pointercancel", stop);
+  split.addEventListener("lostpointercapture", stop);
+  addEventListener("pointerup", stop);
+  addEventListener("blur", stop);
+  addEventListener("pointermove", function (ev) { if (on && !ev.buttons) stop(); });
+  document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); });
+
+  view();
+  if (get("sloop.paneopen") === "1") setOpen(true, false);
+})();
+</script>
+<script>
+(function () {
+  /* The library's import controls. They exist only where the server answers them, which is
+     the same rule the editor follows, so a static copy shows nothing. */
+  function wire() {
+    var form = document.getElementById("libadd");
+    if (!form || form.dataset.wired) return;
+    form.dataset.wired = "1";
+    var base = location.pathname.replace(/[^/]*$/, "");
+    var doi = document.getElementById("libdoi");
+    var say = document.getElementById("libsay");
+    var file = document.getElementById("libpdf");
+
+    function tell(msg, bad) { say.textContent = msg; say.className = "libsay" + (bad ? " err" : ""); }
+    function post(url, body, type) {
+      var h = type ? { "Content-Type": type } : {};
+      return fetch(base + url, { method: "POST", headers: h, body: body })
+        .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); });
+    }
+
+    document.getElementById("libdoibtn").addEventListener("click", function () {
+      var v = doi.value.trim();
+      if (!v) return;
+      tell("asking doi.org");
+      post("library/doi", JSON.stringify({ doi: v }), "application/json")
+        .then(function (res) {
+          if (!res[0]) throw new Error(res[1].error);
+          doi.value = "";
+          tell(res[1].key + " " + res[1].note + ". Add its pdf to have it read.");
+        })
+        .catch(function (e) { tell(String(e.message || e), true); });
+    });
+    doi.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); document.getElementById("libdoibtn").click(); }
+    });
+
+    function send(f) {
+      var key = f.name.replace(/\.pdf$/i, "").replace(/[^A-Za-z0-9_.-]+/g, "");
+      if (!key) { tell("that filename has no usable key in it", true); return Promise.resolve(); }
+      tell("uploading " + key);
+      return post("library/pdf/" + encodeURIComponent(key), f, "application/pdf")
+        .then(function (res) {
+          if (!res[0]) throw new Error(res[1].error);
+          tell(key + " is being read. It appears here when it is done.");
+        })
+        .catch(function (e) { tell(key + ": " + String(e.message || e), true); });
+    }
+    file.addEventListener("change", function () {
+      var fs = [].slice.call(file.files);
+      file.value = "";
+      fs.reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
+    });
+
+    /* the whole page takes a drop, since the target is otherwise a small word */
+    ["dragover", "drop"].forEach(function (t) {
+      document.addEventListener(t, function (e) {
+        if (!e.dataTransfer || [].indexOf.call(e.dataTransfer.types, "Files") < 0) return;
+        e.preventDefault();
+        if (t !== "drop") return;
+        [].slice.call(e.dataTransfer.files)
+          .filter(function (f) { return /\.pdf$/i.test(f.name); })
+          .reduce(function (p, f) { return p.then(function () { return send(f); }); }, Promise.resolve());
+      });
+    });
+  }
+  fetch(location.pathname.replace(/[^/]*$/, "") + "edit/", { cache: "no-store" })
+    .then(function (r) { if (r.ok) { wire(); addEventListener("hashchange", wire); } })
+    .catch(function () {});
 })();
 </script>
 """

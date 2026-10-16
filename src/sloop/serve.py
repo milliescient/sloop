@@ -20,6 +20,10 @@ import functools
 import hashlib
 import http.server
 import json
+import queue
+import re
+import urllib.error
+import urllib.request
 import shutil
 import subprocess
 import sys
@@ -31,11 +35,12 @@ from pathlib import Path
 SAVING = threading.Lock()
 
 ROOT = PAGES = None
+CONF = {}
 
 
 def init(root, conf):
-    global ROOT, PAGES
-    ROOT, PAGES = root, conf["pages"]
+    global ROOT, PAGES, CONF
+    ROOT, PAGES, CONF = root, conf["pages"], conf
 
 
 def page_file(slug):
@@ -62,13 +67,103 @@ def build(out, flags):
     return r.returncode == 0, (r.stderr + r.stdout).strip()
 
 
+SAFE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+
+
+def bib_append(entry, key, doi=""):
+    """Add a citation unless the file already has it. Matched on the doi first and the key
+    second: the same paper arriving from doi.org carries a different key than one keyed by
+    hand, and two entries for one paper is worse than a refused import."""
+    path = CONF["bibliography"]
+    old = path.read_text() if path.exists() else ""
+    if doi:
+        m = re.search(r"@\w+\s*\{\s*([^,\s]+)[^@]*?doi\s*=\s*[{\"]\s*" +
+                      re.escape(doi) + r"\s*[}\"]", old, re.I)
+        if m:
+            return None, m.group(1)
+    if re.search(r"@\w+\s*\{\s*" + re.escape(key) + r"\s*,", old, re.I):
+        return None, key
+    entry = re.sub(r"^(@\w+\s*\{\s*)[^,\s]+", lambda m: m.group(1) + key, entry.strip(), count=1)
+    path.write_text((old.rstrip() + "\n\n" + entry + "\n") if old.strip() else entry + "\n")
+    return key, key
+
+
+def doi_bibtex(doi):
+    doi = re.sub(r"^(https?://(dx\.)?doi\.org/|doi:)", "", doi.strip())
+    req = urllib.request.Request("https://doi.org/" + doi,
+                                 headers={"Accept": "application/x-bibtex",
+                                          "User-Agent": "sloop-library"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode("utf-8").strip()
+
+
+def spawn_librarian(key):
+    """Detached on purpose: reading a paper takes a minute, and the page picks the result up
+    over live reload rather than holding the request open for it."""
+    subprocess.Popen([sys.executable, "-m", "sloop.librarian", str(ROOT), key],
+                     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     edit = False
     flags = []
 
+    # live/, one long-lived response per open page. The build id changes after every
+    # successful rebuild, which is the only thing a viewer needs to know to follow along.
+    build_id = "0"
+    waiters = []
+    waiters_lock = threading.Lock()
+
+    @classmethod
+    def announce(cls):
+        cls.build_id = str(time.time_ns())
+        with cls.waiters_lock:
+            for q in list(cls.waiters):
+                q.put(cls.build_id)
+
+    def stream_builds(self):
+        q = queue.Queue()
+        with Handler.waiters_lock:
+            Handler.waiters.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(f"data: {Handler.build_id}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                try:
+                    self.wfile.write(f"data: {q.get(timeout=20)}\n\n".encode())
+                except queue.Empty:
+                    # a proxy will drop a connection that says nothing for long enough
+                    self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass            # the page was closed or reloaded, which is the ordinary ending
+        finally:
+            with Handler.waiters_lock:
+                if q in Handler.waiters:
+                    Handler.waiters.remove(q)
+
+    def send_response(self, *a, **k):
+        self._cached = False
+        super().send_response(*a, **k)
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == "cache-control":
+            self._cached = True
+        super().send_header(keyword, value)
+
     def end_headers(self):
         self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet")
         self.send_header("Referrer-Policy", "no-referrer")
+        # Revalidate every time. Without this the page is heuristically cacheable, and a
+        # viewer can sit on a copy old enough to predate the live/ client and never hear
+        # that anything changed.
+        if not getattr(self, "_cached", False):
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def log_message(self, fmt, *args):
@@ -97,6 +192,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        # the library's pdfs live beside the pages, not in the build output: one copy on disk
+        path = self.path.split("?")[0]
+        if path.startswith("/library/pdf/") and path.endswith(".pdf"):
+            name = Path(path).name
+            f = ROOT / "library" / "pdf" / name
+            if name != path[len("/library/pdf/"):] or not f.is_file():
+                return self.reply(404, {"error": "no such pdf"})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(f.stat().st_size))
+            self.end_headers()
+            self.wfile.write(f.read_bytes())
+            return
+        if path.rstrip("/") == "/live":
+            return self.stream_builds()
         slug = self.edit_slug()
         if slug is None:
             return super().do_GET()
@@ -110,7 +220,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         text = f.read_text()
         self.reply(200, {"file": f"{slug}/{f.name}", "text": text, "hash": digest(text)})
 
+    def library_post(self, path):
+        """doi/ adds a citation. pdf/<key> stores a paper and starts reading it."""
+        if not self.edit or self.headers.get("Tailscale-Funnel-Request"):
+            return self.reply(404, {"error": "importing is off"})
+        n = int(self.headers.get("Content-Length", 0))
+        if n > 80 * 1024 * 1024:
+            return self.reply(413, {"error": "over 80MB"})
+        raw = self.rfile.read(n)
+
+        if path == "/library/doi":
+            try:
+                doi = json.loads(raw)["doi"]
+            except (ValueError, KeyError):
+                return self.reply(400, {"error": "expected {doi}"})
+            try:
+                entry = doi_bibtex(doi)
+            except (urllib.error.URLError, OSError) as e:
+                return self.reply(502, {"error": f"doi.org said: {e}"})
+            m = re.match(r"\s*@\w+\s*\{\s*([^,\s]+)\s*,", entry)
+            if not m:
+                return self.reply(502, {"error": "doi.org did not return bibtex"})
+            key = m.group(1).lower()
+            if not SAFE_KEY.match(key):
+                return self.reply(502, {"error": f"unusable key {key!r}"})
+            clean = re.sub(r"^(https?://(dx\.)?doi\.org/|doi:)", "", doi.strip())
+            with SAVING:
+                added, key = bib_append(entry, key, clean)
+            return self.reply(200, {"key": key, "added": bool(added),
+                                    "note": "cited" if added else "already cited"})
+
+        key = path[len("/library/pdf/"):]
+        if not SAFE_KEY.match(key):
+            return self.reply(400, {"error": "the key must be letters, digits, . _ or -"})
+        if not raw.startswith(b"%PDF"):
+            return self.reply(400, {"error": "that is not a pdf"})
+        d = ROOT / "library" / "pdf"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{key}.pdf").write_bytes(raw)
+        spawn_librarian(key)
+        return self.reply(200, {"key": key, "reading": True})
+
     def do_POST(self):
+        p = self.path.split("?")[0]
+        if p == "/library/doi" or p.startswith("/library/pdf/"):
+            return self.library_post(p)
         slug = self.edit_slug()
         if slug is None:
             return self.reply(404, {"error": "not found"})
@@ -138,6 +292,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 shutil.copy(Path(tmp) / "index.html", Path(self.directory) / "index.html.new")
                 (Path(self.directory) / "index.html.new").replace(
                     Path(self.directory) / "index.html")
+                Handler.announce()
         self.reply(200, {"hash": digest(text)})
 
 
@@ -182,6 +337,7 @@ def watch(root, conf, site, flags, interval=1.0):
                 continue
             shutil.copy(Path(tmp) / "index.html", site / "index.html.new")
             (site / "index.html.new").replace(site / "index.html")
+            Handler.announce()
             print("  " + (log.strip().splitlines() or [""])[-1], flush=True)
 
 
