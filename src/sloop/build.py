@@ -36,6 +36,8 @@ import shutil
 import tempfile
 import html
 import re
+import secrets
+import time
 import subprocess
 from collections import Counter
 from datetime import datetime
@@ -548,6 +550,46 @@ def export(slug, out=None):
     out = Path(out) if out else Path.cwd() / f"{slug}.html"
     out.write_text(text)
     print(f"  wrote {out}  {out.stat().st_size // 1024} KB")
+
+
+def share(slug):
+    """A page at a link that can be taken back.
+
+    The page is exported under a token no one can guess, into share/, which the share
+    server alone answers for and git never sees. Removing the directory is the revocation.
+    """
+    token = secrets.token_urlsafe(12)
+    d = ROOT / "share" / token
+    d.mkdir(parents=True)
+    export(slug, d / "index.html")
+    (d / "page").write_text(f"{slug}\n{time.strftime('%Y-%m-%d %H:%M')}\n")
+    base = str(CONF["share"].get("url") or "").rstrip("/")
+    print(f"  {base}/{token}/" if base
+          else f"  share/{token}/  (set share.url in notebook.yml to print the link)")
+    return token
+
+
+def shares():
+    """What is shared: (token, page, when)."""
+    d = ROOT / "share"
+    out = []
+    for t in sorted(d.iterdir()) if d.is_dir() else []:
+        if (t / "page").is_file():
+            slug, when = ((t / "page").read_text().splitlines() + ["", ""])[:2]
+            out.append((t.name, slug, when))
+    return out
+
+
+def unshare(what):
+    """Take a link back, by its token or by the page it shares."""
+    gone = 0
+    for token, slug, _ in shares():
+        if what in (token, slug):
+            shutil.rmtree(ROOT / "share" / token)
+            print(f"  removed {token}  ({slug})")
+            gone += 1
+    if not gone:
+        raise SystemExit(f"nothing is shared as {what}")
 
 
 def emit_site(pages, site):

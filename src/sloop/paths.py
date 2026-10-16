@@ -26,6 +26,9 @@ DEFAULTS = {
     # literal colours in a figure and the stylesheet variable each stands for
     "figure_colors": {},
     "serve": {"port": 8099, "edit": True, "panes": []},
+    # a page shared at a revocable link: the share server's port, and the public url it
+    # is reachable at, which is a Funnel on that port and nothing else
+    "share": {"port": 8106, "url": ""},
 }
 
 
@@ -55,6 +58,7 @@ def load(explicit=None):
     raw = yaml.safe_load((root / CONFIG_NAME).read_text()) or {}
     conf = {**DEFAULTS, **raw}
     conf["serve"] = {**DEFAULTS["serve"], **(raw.get("serve") or {})}
+    conf["share"] = {**DEFAULTS["share"], **(raw.get("share") or {})}
     for key in ("pages", "out", "checkouts", "bibliography"):
         conf[key] = (root / conf[key]).resolve() if not Path(conf[key]).is_absolute() \
                     else Path(conf[key])

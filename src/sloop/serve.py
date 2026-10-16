@@ -320,6 +320,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.reply(200, {"hash": digest(text)})
 
 
+class ShareHandler(http.server.BaseHTTPRequestHandler):
+    """The public face, and all of it.
+
+    One shared page per token and nothing else: no listing, no index, no other path, no
+    method but GET and HEAD. Funnel points at this port and at nothing else on the machine,
+    so what this refuses, the internet cannot reach.
+    """
+    root = None
+    TOKEN = re.compile(r"^/share/([A-Za-z0-9_-]{8,64})/(?:index\.html)?$")
+
+    def do_GET(self):
+        self.answer(True)
+
+    def do_HEAD(self):
+        self.answer(False)
+
+    def answer(self, with_body):
+        m = self.TOKEN.match(self.path.split("?")[0])
+        f = (self.root / "share" / m.group(1) / "index.html") if m else None
+        self.send_response(200 if f and f.is_file() else 404)
+        self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        if not (f and f.is_file()):
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        data = f.read_bytes()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if with_body:
+            self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def share_server(root, conf):
+    port = int(conf["share"]["port"])
+    ShareHandler.root = root
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), ShareHandler)
+    print(f"  http://127.0.0.1:{port}/share/<token>/   serving {root / 'share'}", flush=True)
+    srv.serve_forever()
+
+
 def fingerprint(root, conf):
     """What a rebuild depends on, cheaply.
 

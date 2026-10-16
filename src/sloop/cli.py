@@ -15,6 +15,10 @@ Every path comes from the notebook being built, not from where the builder is in
     sloop init [DIR]                    # start a notebook here
     sloop pack OUT.pyz                  # pack the builder into one file for deployment
     sloop export PAGE [-o FILE]         # one page as one self-contained file, to send
+    sloop share PAGE                    # the page at a link that can be taken back
+    sloop share --list                  # what is shared
+    sloop unshare TOKEN|PAGE            # take a link back
+    sloop share --serve                 # run the public share server
 
 The notebook is the directory holding notebook.yml: --dir, else $NOTEBOOK_DIR, else the
 nearest one at or above the working directory, so the commands work from inside a page.
@@ -72,7 +76,7 @@ def start(where):
 
 
 COMMANDS = ("build", "serve", "status", "make", "freeze", "unfreeze", "accept", "prune", "cite",
-            "new", "init", "pack", "export")
+            "new", "init", "pack", "export", "share", "unshare")
 
 
 def cite(conf, doi):
@@ -211,6 +215,13 @@ def main(argv=None):
     x.add_argument("page", help="the page directory, e.g. pooling-age-draws")
     x.add_argument("-o", "--out", help="where to write it (default: <page>.html here)")
 
+    sh = sub.add_parser("share", parents=[common], help="a page at a link that can be taken back")
+    sh.add_argument("page", nargs="?", help="the page directory to share")
+    sh.add_argument("--list", action="store_true", help="what is shared")
+    sh.add_argument("--serve", action="store_true", help="run the public share server")
+    un = sub.add_parser("unshare", parents=[common], help="take a shared link back")
+    un.add_argument("what", help="the token, or the page")
+
     k = sub.add_parser("pack", help="pack the builder into one executable file")
     k.add_argument("out", nargs="?", default="sloop.pyz")
 
@@ -230,6 +241,18 @@ def main(argv=None):
     if a.cmd == "build":
         out = Path(a.out).expanduser().resolve() if a.out else None
         builder.build(out, drafts=not a.no_drafts)
+        return
+    if a.cmd == "share":
+        if a.serve:
+            server.share_server(root, conf)
+        elif a.list or not a.page:
+            for token, slug, when in builder.shares():
+                print(f"  {token}  {slug}  {when}")
+        else:
+            builder.share(a.page)
+        return
+    if a.cmd == "unshare":
+        builder.unshare(a.what)
         return
     if a.cmd == "export":
         builder.export(a.page, Path(a.out).expanduser().resolve() if a.out else None)
