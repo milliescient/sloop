@@ -405,12 +405,27 @@ def fingerprint(root, conf):
     .git/logs/HEAD is in here because a page's Updated stamp comes from git rather than from
     mtimes, and committing touches no watched file. Without it every stamp sits one build
     behind, from the edit until someone rebuilds by hand.
+
+    The reading library is in here too, so a new summary, pdf or reordering shows without a
+    rebuild by hand. Its pdfs are fingerprinted by size and mtime, not read: there are dozens
+    of them and the poll runs every second.
     """
     h = hashlib.sha256()
     watched = sorted(p for p in conf["pages"].rglob("*") if p.is_file())
     for f in watched + [conf["bibliography"], root / "notebook.yml", root / ".git/logs/HEAD"]:
         try:
             h.update(f.read_bytes())
+        except OSError:
+            h.update(b"-")
+        h.update(str(f).encode())
+    lib = root / "library"
+    for f in sorted(p for p in lib.rglob("*") if p.is_file()) if lib.is_dir() else []:
+        try:
+            if f.suffix == ".pdf":
+                st = f.stat()
+                h.update(f"{st.st_size}:{st.st_mtime_ns}".encode())
+            else:
+                h.update(f.read_bytes())
         except OSError:
             h.update(b"-")
         h.update(str(f).encode())
