@@ -495,7 +495,6 @@ def shell(depth, title, main, shared):
             .replace("@@TITLE@@", html.escape(TITLE))
             .replace("@@LATEST@@", shared["latest"])
             .replace("@@N@@", str(shared["n"]))
-            .replace("@@SCRATCH@@", shared["scratch"])
             .replace("@@FILTERS@@", shared["filters"])
             .replace("@@DATES@@", shared["dates"])
             .replace("@@SOURCES@@", shared["sources"])
@@ -675,11 +674,6 @@ def build(site=None, drafts=True):
         f'<span>{html.escape(t)}</span><span class="n">{n}</span></button>'
         for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
-    scratch = "".join(
-        f'<a class="scratchlink" href="@@ROOT@@{e["slug"]}/" data-rootlink="{e["slug"]}/">'
-        f'{html.escape(e["title"])}</a>'
-        for e in recent if e["scratch"])
-
     panes = [r for r in ((CONF.get("serve") or {}).get("panes") or []) if r.get("url")]
     term = next((r for r in panes if r.get("label") == "terminal"), None)
     LIB = library_markup()
@@ -741,7 +735,7 @@ def build(site=None, drafts=True):
         for n, u in listed_srcs)
 
     shared = {"rail": rail, "latest": recent[0]["updated"], "n": len(entries),
-              "scratch": scratch, "filters": filters, "dates": dates, "sources": srcs}
+              "filters": filters, "dates": dates, "sources": srcs}
     index_main = ('<p class="empty" id="empty">Nothing matches every filter selected.</p>'
                   '<div id="tocwrap"><div class="tochead"><span class="label">Page</span>'
                   '<button class="sortbtn" id="sortdate" type="button">Updated '
@@ -949,11 +943,6 @@ STYLE = r"""
   .libopen:hover { text-decoration:underline; }
   .liberr { color:var(--oxide, var(--accent)); }
   .filterhead { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s2); }
-  /* a scratch page is reachable but unlisted, so the sidebar is the only way in */
-  .scratchlink { display:block; font-family:var(--mono); font-size:.72rem; letter-spacing:.04em;
-    color:var(--muted); text-decoration:none; padding-bottom:var(--s2);
-    border-bottom:1px solid var(--rule); margin-bottom:var(--s1); }
-  .scratchlink:hover { color:var(--accent); }
   .filters { display:flex; flex-direction:column; gap:.2rem; }
   .main { min-width:0; display:flex; flex-direction:column; gap:var(--s4); }
   /* the measure is on the text an entry holds, so its footer can run wider */
@@ -1185,7 +1174,6 @@ MARKUP = r"""@@RAIL@@
 
 <div class="shell">
   <!--chrome--><aside class="side">
-    @@SCRATCH@@
     <div class="filterhead">
       <p class="label">Tags</p>
       <button id="reset" type="button">clear</button>
