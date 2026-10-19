@@ -6,10 +6,11 @@ the hash of everything it read and wrote.
 
 A `{{key}}` anywhere in a page is replaced by a value one of the page's steps wrote, so a
 number in the prose cannot drift from the computation behind it. Rerun the step and the prose
-follows. A page declares its steps, and `page.lock` beside it records each one. An input that
-has changed underneath a page, a tool at the wrong version and a check that fails are all
-refused until someone says the change was meant, and a page that reads unfinished work says
-so on its face and cannot be published.
+follows. A page declares its steps, and `page.lock` beside it records each one. A step that
+is not frozen simply reruns when anything it reads changes, and says what changed. A frozen
+step marks a result as decided, so what it rests on is refused when it moves, until someone
+says the change was meant. A page that reads unfinished work says so on its face, and a page
+reaches anyone else only when it is shared.
 
 > *slop* is an anagram of *PLoS*, the Public Library of Slop. We generate slop data, run
 > slop analyses and present slop results, and then draw real conclusions, which is only
@@ -36,7 +37,7 @@ That puts `sloop` on the path, with `notebook` as an alias.
     sloop make PAGE [STEP]              # run what is stale, in order; a frozen step only by name
     sloop freeze PAGE STEP              # fix a step as it stands, without running it
     sloop unfreeze PAGE STEP            # make it an ordinary step again
-    sloop accept PAGE WHAT -m "why"     # say a changed input or version was meant
+    sloop accept PAGE WHAT -m "why"     # say a change under a frozen step was meant
     sloop cite DOI                      # add a reference to the notebook's .bib file
     sloop pack sloop.pyz                # pack the builder into one file for deployment
 
@@ -134,7 +135,7 @@ A build never needs any of them.
 on any python3 with nothing installed and nothing to resolve:
 
     sloop pack sloop.pyz
-    python3 sloop.pyz build --no-drafts --out _site
+    python3 sloop.pyz build --out _site
 
 Commit that file beside the pages and a GitHub Actions job is one line with no setup step,
 since every runner image already ships python3. The same file works on Netlify, Cloudflare
@@ -148,7 +149,6 @@ A page is a directory under `pages/` holding a `page.md` whose header is YAML te
 
     title: The col=3 move was starving the column that mixes worst
     date: 2026-10-10
-    draft: true                    # keeps it local: `sloop build --no-drafts` holds it back
     tags: mcmc, moves
     steps:
       simulate:
@@ -213,10 +213,19 @@ A step is then one of
 | unrecorded | its outputs are there, and nothing says how they got there |
 | current | none of those |
 
-A stale step that is not frozen is rerun. What is not supposed to change underneath a page is
-refused: an input that lives in a dependency and that no step here writes,
-the output of a frozen step, a version. `sloop accept PAGE WHAT -m "why"` writes down that
-the change was meant, in the lock, with the reason.
+A stale step that is not frozen is rerun, whatever changed, and prints which of its inputs had
+changed. Only a frozen step marks a result as decided, so only what a frozen step rests on is
+refused when it moves: an input a frozen step read, or the output of a frozen step that another
+step reads. `sloop accept PAGE WHAT -m "why"` writes down that the change was meant, in the
+lock, with the reason. A version a step states is a requirement, so a step whose stated version
+is not installed does not run.
+
+Freezing adds a protection and unfreezing takes one away, so they are not symmetric.
+`sloop freeze PAGE` freezes every step of a page that is wholly current, and refuses one that is
+not. `sloop unfreeze`, `sloop accept` and `sloop make --force` on a frozen step each ask for
+`yes` at a terminal and refuse without one, so an agent can freeze a page but cannot undo it.
+The lock records which steps are frozen, so a `frozen: true` deleted from a page by hand is
+refused by `sloop make` and reported by `sloop status`.
 
 `sloop freeze PAGE STEP` records a step as it stands without running it, for work done
 outside sloop, such as an analysis started on a cluster. Nothing checks what a frozen step
@@ -232,9 +241,9 @@ ignored by git, so a directory of ten thousand logs is not read again on every s
 ### Unfinished work
 
 A page that reads the output of a step with no record, or whose quick step ran on
-uncommitted code, is provisional: the lock says why, the page carries a banner, and
-`sloop build --no-drafts` fails on it unless it is marked `draft: true`. Nothing clears that
-by hand. A frozen step refuses to run on uncommitted code at all.
+uncommitted code, is provisional: the lock says why, and the page carries a banner, including
+in a shared copy. Nothing clears that by hand. A frozen step refuses to run on uncommitted
+code at all.
 
 Results can be watched as they come in. With an analysis running, `sloop make PAGE` skips it
 and reruns the summary against the logs that exist.

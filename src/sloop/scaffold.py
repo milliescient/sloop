@@ -17,7 +17,6 @@ from pathlib import Path
 
 TEMPLATE = """title: {title}
 date: {date}
-draft: true
 tags:
 # Numbers from a script? Declare the step that writes them, then: sloop make {name}
 # steps:
@@ -63,6 +62,6 @@ def new(pages, name, words=(), dependencies=None):
         "RSCRIPT=Rscript\n")
     print(path)
     print("  fill in the title, tags and the body, then: sloop build")
-    print("  it stays out of the site until you drop the draft: line")
+    print("  it is on the site as soon as it builds; sloop share puts it in front of anyone else")
     print(f"  numbers from a script? uncomment steps:, then: sloop make {d.name}")
     return path

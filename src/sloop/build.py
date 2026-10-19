@@ -163,17 +163,6 @@ def written(page_dir):
     return datetime.fromtimestamp(newest).astimezone().isoformat(timespec="seconds")
 
 
-def is_draft(path):
-    """Read only the header. A draft must not block a build, so a broken one is left
-    for parse() to report rather than raising here."""
-    head, _, _ = path.read_text().partition("\n---\n")
-    try:
-        h = yaml.safe_load(head) or {}
-        return bool(h.get("draft", False) or h.get("scratch", False))
-    except yaml.YAMLError:
-        return False
-
-
 def parse(path):
     head, _, body = path.read_text().partition("\n---\n")
     name = path.parent.name
@@ -199,7 +188,6 @@ def parse(path):
     # a scratch page is reachable and never listed: no index row, no tag or date counts,
     # and never published
     meta["scratch"] = bool(meta.get("scratch", False))
-    meta["draft"] = bool(meta.get("draft", False)) or meta["scratch"]
     meta["slug"] = name
     meta["path"] = str(path)
     if not meta["tags"] and not meta["scratch"]:
@@ -631,15 +619,12 @@ def emit_site(pages, site):
     print(f"  {shown}/  {len(written)} pages, {total // 1024} KB")
 
 
-def build(site=None, drafts=True):
+def build(site=None):
     files = sorted(p for d in sorted(PAGES.iterdir()) if d.is_dir()
                    for p in (d / "page.md", d / "page.html") if p.exists())
-    held = [] if drafts else [p for p in files if is_draft(p)]
-    files = [p for p in files if p not in held]
     entries = [parse(p) for p in files]
     if not entries:
-        held_note = f", {len(held)} held as drafts" if held else ""
-        raise SystemExit(f"nothing to build: no publishable pages{held_note}")
+        raise SystemExit("nothing to build: no pages")
     activity = last_activity()
     unsettled = {}
     for e in entries:
@@ -652,12 +637,6 @@ def build(site=None, drafts=True):
         e["prov"] = provenance(page_dir)
         if e["why"]:
             unsettled[e["slug"]] = e["why"]
-    # A page whose record does not hold is shown as such while it is being worked on, and is
-    # never published: that build fails, rather than quietly including or leaving out the page.
-    if unsettled and not drafts:
-        lines = "".join(f"\n  {slug}: {w}" for slug, why in unsettled.items() for w in why)
-        raise SystemExit("not published. These pages are provisional, and none is marked "
-                         f"draft:{lines}")
     recent = sorted(entries, key=lambda e: (e["stamp"], e["slug"]), reverse=True)
     listed = [e for e in entries if not e["scratch"]]
     counts = Counter(t for e in listed for t in e["tags"])
@@ -759,8 +738,6 @@ def build(site=None, drafts=True):
                                 stub_main(key, doi), shared)))
     emit_site(pages, site or SITE)
     L.HASHER.save()
-    for p in held:
-        print(f"  draft, not published: {p.parent.name}")
     for slug, why in unsettled.items():
         print(f"  provisional: {slug}: {why[0]}" + (f" (and {len(why) - 1} more)" if len(why) > 1 else ""))
     print(f"{len(entries)} pages, {len(counts)} tags, "

@@ -6,9 +6,9 @@ Every path comes from the notebook being built, not from where the builder is in
     sloop serve                         # build, serve, and rebuild as pages change
     sloop status [PAGE]                 # each step's state. Runs checks, and no steps.
     sloop make PAGE [STEP]              # run what is stale, in order. A frozen step only by name.
-    sloop freeze PAGE STEP              # fix a step as it stands, without running it
-    sloop unfreeze PAGE STEP            # make it an ordinary step again
-    sloop accept PAGE WHAT -m "why"     # say a changed input or version was meant
+    sloop freeze PAGE [STEP]            # fix a step, or every step if all are current, as it stands
+    sloop unfreeze PAGE STEP            # make it an ordinary step again; asks at a terminal
+    sloop accept PAGE WHAT -m "why"     # say a change under a frozen step was meant; asks too
     sloop prune                         # remove provisioned checkouts no step states any more
     sloop cite DOI                      # add a reference to the notebook's .bib file
     sloop new NAME ["A title"]          # scaffold a page
@@ -159,14 +159,16 @@ def main(argv=None):
 
     b = sub.add_parser("build", parents=[common], help="render the notebook")
     b.add_argument("--out", help="write the site here instead of the configured out")
-    b.add_argument("--no-drafts", action="store_true", help="hold back draft pages")
+    # there are no drafts: a page reaches anyone else only when shared. Kept so a service
+    # that still passes it starts.
+    b.add_argument("--no-drafts", action="store_true", help=argparse.SUPPRESS)
 
     s = sub.add_parser("serve", parents=[common], help="build, then serve on localhost")
     s.add_argument("--out", help="serve from here instead of the configured out")
     s.add_argument("--port", type=int)
     s.add_argument("--edit", action="store_true", default=None)
     s.add_argument("--no-edit", dest="edit", action="store_false")
-    s.add_argument("--no-drafts", action="store_true")
+    s.add_argument("--no-drafts", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--no-build", action="store_true", help="serve what is already built")
     s.add_argument("--no-watch", action="store_true", help="do not rebuild on change")
 
@@ -183,9 +185,9 @@ def main(argv=None):
     g.add_argument("--force", action="store_true",
                    help="let a frozen step overwrite outputs that already exist")
 
-    g = sub.add_parser("freeze", parents=[common], help="fix a step as it stands, without running it")
+    g = sub.add_parser("freeze", parents=[common], help="fix a step, or every step of a page, as it stands")
     g.add_argument("page")
-    g.add_argument("step")
+    g.add_argument("step", nargs="?", help="omit to freeze every step, which must all be current")
     g.add_argument("--unverified", metavar="WHY",
                    help="record the versions the page states without checking them, and why")
 
@@ -240,7 +242,9 @@ def main(argv=None):
 
     if a.cmd == "build":
         out = Path(a.out).expanduser().resolve() if a.out else None
-        builder.build(out, drafts=not a.no_drafts)
+        if a.no_drafts:
+            print("  --no-drafts does nothing: there are no drafts, and a page is published by sharing it")
+        builder.build(out)
         return
     if a.cmd == "share":
         if a.serve:
@@ -272,7 +276,12 @@ def main(argv=None):
                              else "not everything ran; what did not is unchanged")
         return
     if a.cmd == "freeze":
-        locker.freeze(locker.one_page(a.page), a.step, unverified=a.unverified)
+        if a.step:
+            locker.freeze(locker.one_page(a.page), a.step, unverified=a.unverified)
+        elif a.unverified:
+            raise SystemExit("--unverified freezes one named step: sloop freeze PAGE STEP --unverified WHY")
+        else:
+            locker.freeze_page(locker.one_page(a.page))
         return
     if a.cmd == "unfreeze":
         locker.unfreeze(locker.one_page(a.page), a.step)
@@ -291,8 +300,9 @@ def main(argv=None):
         return
 
     site = Path(a.out).expanduser().resolve() if a.out else conf["out"]
-    flags = ["--no-drafts"] if a.no_drafts else []
+    if a.no_drafts:
+        print("  --no-drafts does nothing: there are no drafts, and a page is published by sharing it")
     if not a.no_build:
-        builder.build(site, drafts=not a.no_drafts)
-    server.serve(root, conf, port=a.port, site=site, edit=a.edit, flags=flags,
+        builder.build(site)
+    server.serve(root, conf, port=a.port, site=site, edit=a.edit, flags=[],
                  watching=not a.no_watch)

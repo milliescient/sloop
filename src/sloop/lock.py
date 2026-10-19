@@ -35,14 +35,18 @@ the step's behalf. It is written by sloop and read by a person in a diff. A step
     unrecorded   its outputs are there, and nothing says how they got there
     current      none of those
 
-A stale step that is not frozen is simply rerun. What is not supposed to change underneath a
-page is refused instead, until someone says they meant it: an input that lives in a dependency
-and that no step here writes, the output of a frozen step, or a version. `sloop accept` writes
-that down with its reason, in the lock, where the next reader finds it.
+A stale step that is not frozen is simply rerun, whatever changed, and says which of its
+inputs had changed. Only a frozen step marks a result as decided, so only what a frozen step
+rests on is refused when it moves, until someone says they meant it: an input a frozen step
+read, or the output of a frozen step that another step reads. `sloop accept` writes that down
+with its reason, in the lock, where the next reader finds it. A version a step states is a
+requirement, not a record, so a step whose stated version is not what is installed does not
+run at all.
 
 Work that is unfinished is not refused and not waved through. A page that reads the output of
 a step with no record, or whose quick step ran on uncommitted code, is provisional: the lock
-says why, the page carries a banner, and a published build fails on it.
+says why, and the page carries a banner. A page reaches anyone else only when it is shared,
+which exports it as it stands, banner and all.
 """
 import hashlib
 import json
@@ -323,7 +327,7 @@ def write_lock(plan, lock):
     for name in plan.order:
         rec = lock["steps"].get(name)
         if rec:
-            doc["steps"][name] = {k: rec[k] for k in ("uses", "inputs", "outputs", "made_with") if rec.get(k)}
+            doc["steps"][name] = {k: rec[k] for k in ("frozen", "uses", "inputs", "outputs", "made_with") if rec.get(k)}
     if lock["checks"]:
         doc["checks"] = {n: lock["checks"][n] for n in plan.checks if n in lock["checks"]}
     if lock["provisional"]:
@@ -516,7 +520,8 @@ def accepted(lock, key, target, now):
 
 
 def check_inputs(plan, lock, step):
-    bad = []
+    """(refusals, notes). Only a frozen step is refused for an input that moved under it."""
+    bad, notes = [], []
     rec = lock["steps"].get(step["name"]) or {}
     for p in step["inputs"]:
         at, dep = plan.where(p)
@@ -534,9 +539,12 @@ def check_inputs(plan, lock, step):
         elif dep is not None:
             was = (rec.get("inputs") or {}).get(p)
             if was and was != now and not accepted(lock, "path", p, now):
-                bad.append(f"{p} has changed since this step last read it ({was} -> {now}). "
-                           f"If that was meant: sloop accept {plan.name} {p} -m \"why\"")
-    return bad
+                if step["frozen"]:
+                    bad.append(f"{p} has changed since this step last read it ({was} -> {now}). "
+                               f"If that was meant: sloop accept {plan.name} {p} -m \"why\"")
+                else:
+                    notes.append(f"{p} has changed since this step last read it ({was} -> {now})")
+    return bad, notes
 
 
 def run_step(plan, lock, name, force=False, check=False):
@@ -545,11 +553,17 @@ def run_step(plan, lock, name, force=False, check=False):
     print(f"{plan.name} {name} ... ", end="", flush=True)
     bad, ran = check_uses(plan, step)
     have = [p for p in step["outputs"] if plan.where(p)[0].exists()]
+    if step["frozen"] and have and force and not check:
+        print("", flush=True)
+        confirm(f"remake the frozen step {plan.name} {name}, overwriting {len(have)} recorded output"
+                + ("" if len(have) == 1 else "s"))
+        print(f"{plan.name} {name} ... ", end="", flush=True)
     if step["frozen"] and have and not force and not check:
         bad += [f"{p} already exists" for p in have]
         bad.append("another page may rest on these, or a job may be writing them: pass "
                    "--force to remake them")
-    bad += check_inputs(plan, lock, step)
+    refused, notes = check_inputs(plan, lock, step)
+    bad += refused
     if bad:
         print("refused", flush=True)
         for line in bad:
@@ -573,6 +587,8 @@ def run_step(plan, lock, name, force=False, check=False):
                 shutil.copy2(at, backup / p)
 
     print(f"running `{step['cmd']}`", flush=True)
+    for line in notes:
+        print(f"  {line}")
     r = subprocess.run(step["cmd"], shell=True, env=environment(plan, step), cwd=plan.dir)
     ok = r.returncode == 0
     gone = [p for p in step["outputs"] if not plan.where(p)[0].exists()]
@@ -611,6 +627,8 @@ def run_step(plan, lock, name, force=False, check=False):
 def record(plan, step, uses, fresh=True):
     rec = {"uses": list(uses), "inputs": observe(plan, step["inputs"], fresh),
            "outputs": observe(plan, step["outputs"], fresh)}
+    if step["frozen"]:
+        rec["frozen"] = True
     with_ = made_with(plan, step)
     if with_:
         rec["made_with"] = with_
@@ -689,11 +707,36 @@ def finish(plan, lock):
     HASHER.save()
 
 
+def thawed(plan, lock):
+    """Steps the lock records as frozen and the page no longer marks frozen."""
+    return [n for n in plan.order
+            if (lock["steps"].get(n) or {}).get("frozen") and not plan.steps[n]["frozen"]]
+
+
+def confirm(what):
+    """Removing a protection is a person's decision, made at a terminal."""
+    if not sys.stdin.isatty():
+        raise SystemExit(f"{what}: this takes away a protection, so it asks a person at a "
+                         f"terminal, and there is none here")
+    if input(f"{what}? type yes: ").strip().lower() != "yes":
+        raise SystemExit("not done")
+
+
 def make(page_dir, only=None, force=False, check=False):
     plan = Plan(page_dir)
     if not plan.steps and not plan.checks:
         return True
     lock = read_lock(page_dir)
+    gone = thawed(plan, lock)
+    if gone:
+        for n in gone:
+            print(f"{plan.name} {n}: the lock records it as frozen, and the page no longer says "
+                  f"so. Put frozen: true back, or: sloop unfreeze {plan.name} {n}")
+        return False
+    # a step frozen before the lock kept the mark is marked now
+    for n in plan.order:
+        if plan.steps[n]["frozen"] and n in lock["steps"]:
+            lock["steps"][n]["frozen"] = True
     if only:
         if only not in plan.steps:
             raise SystemExit(f"{plan.name}: no step {only!r}; it has {', '.join(plan.order)}")
@@ -801,7 +844,7 @@ def freeze(page_dir, name, unverified=None):
             for line in bad:
                 sys.stderr.write(f"  {line}\n")
             raise SystemExit(f"{plan.name} {name}: not frozen")
-    lock["steps"][name] = record(plan, step, ran, fresh=True)
+    lock["steps"][name] = dict(record(plan, step, ran, fresh=True), frozen=True)
     if unverified:
         lock["accepted"].append({"step": name, "uses": list(ran), "why": unverified})
     if set_frozen(page_dir, name, True):
@@ -811,14 +854,40 @@ def freeze(page_dir, name, unverified=None):
     print(f"{plan.name} {name}: frozen as it stands, {len(step['outputs'])} outputs recorded")
 
 
+def freeze_page(page_dir):
+    """Freeze every step, but only a page whose every step is current, so a page is never
+    frozen around numbers that no longer follow from what it reads."""
+    plan = Plan(page_dir)
+    if not plan.steps:
+        raise SystemExit(f"{plan.name}: no steps to freeze")
+    lock = read_lock(page_dir)
+    states = inspect(plan, lock, fresh=True)
+    bad = [(n, s, why) for n, (s, why) in states.items() if s != "current"]
+    if bad:
+        for n, s, why in bad:
+            sys.stderr.write(f"  {n}: {s}" + (f", {why[0]}" if why else "") + "\n")
+        raise SystemExit(f"{plan.name}: not frozen. Every step has to be current: sloop make {plan.name}")
+    todo = [n for n in plan.order if not plan.steps[n]["frozen"]]
+    for n in todo:
+        freeze(page_dir, n)
+    print(f"{plan.name}: every step frozen" + ("" if todo else ", as it already was"))
+
+
 def unfreeze(page_dir, name):
     plan = Plan(page_dir)
     if name not in plan.steps:
         raise SystemExit(f"{plan.name}: no step {name!r}; it has {', '.join(plan.order)}")
-    if set_frozen(page_dir, name, False):
-        print(f"{plan.name} {name}: no longer frozen. Its record is kept, and it runs when stale.")
-    else:
+    lock = read_lock(page_dir)
+    marked = (lock["steps"].get(name) or {}).get("frozen")
+    if not plan.steps[name]["frozen"] and not marked:
         print(f"{plan.name} {name}: was not frozen")
+        return
+    confirm(f"unfreeze {plan.name} {name}")
+    set_frozen(page_dir, name, False)
+    if marked:
+        del lock["steps"][name]["frozen"]
+        finish(Plan(page_dir), lock)
+    print(f"{plan.name} {name}: no longer frozen. Its record is kept, and it runs when stale.")
 
 
 def accept(page_dir, target, why):
@@ -832,6 +901,7 @@ def accept(page_dir, target, why):
     lock = read_lock(page_dir)
     if not why or not why.strip():
         raise SystemExit("sloop accept needs a reason: -m \"why the change was meant\"")
+    confirm(f"accept the change to {target} on {plan.name}")
     if target in plan.deps and plan.deps[target]["kind"] != "directory":
         changed = None
         for name in plan.order:
@@ -942,6 +1012,9 @@ def status(page_dir, fresh=False):
     scratch = {"checks": {}}
     if plan.checks:
         ok = run_checks(plan, scratch) and ok
+    for n in thawed(plan, lock):
+        print(f"  {n}: the lock records it as frozen, and the page no longer says so")
+        ok = False
     for w in unsettled(plan, lock):
         print(f"  provisional: {w}")
     for a in lock["accepted"]:
