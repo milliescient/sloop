@@ -148,7 +148,10 @@ def fetch_commit(base, name, dep, sha):
     for at, where in remotes_for(name, dep):
         if supplies(where, sha) is False:
             continue
-        for ref in (sha, spec):
+        # asking for one commit needs its whole object name, which a repository here can
+        # expand from the abbreviation a page states and a url cannot
+        full = git(Path(resolved(where)), "rev-parse", "--verify", "--quiet", sha + "^{commit}")
+        for ref in filter(None, (full, spec)):
             r = subprocess.run(["git", "-C", str(base), "fetch", "--no-tags", "--quiet",
                                 str(where), ref], capture_output=True, text=True)
             if r.returncode == 0 and git(base, "rev-parse", "--verify", "--quiet", sha + "^{commit}"):
