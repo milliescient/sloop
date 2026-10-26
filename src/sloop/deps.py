@@ -348,14 +348,18 @@ def shown(name, dep, observed, pinned):
 _urls = {}
 
 
-def origin_of(at):
-    """Where a checkout came from, read off its own remote and written as a web address, so
-    nothing has to be declared for anything that is checked out here."""
-    raw = git(at, "remote", "get-url", "origin") if at and Path(at).is_dir() else None
+def web_url(raw):
+    """A git remote's address as one a reader can open, so either form of it links."""
     if not raw:
         return ""
     ssh = re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?", raw)
     return f"https://{ssh.group(1)}/{ssh.group(2)}" if ssh else re.sub(r"\.git/?$", "", raw)
+
+
+def origin_of(at):
+    """Where a checkout came from, read off its own remote, so nothing has to be declared
+    for anything that is checked out here."""
+    return web_url(git(at, "remote", "get-url", "origin") if at and Path(at).is_dir() else None)
 
 
 def origin_url(name, dep):
@@ -375,8 +379,9 @@ def url_of(name, dep):
     if got:
         return got
     for _, where in remotes_for(name, dep):
-        if where.startswith(("http://", "https://")):
-            return where
+        got = web_url(where)
+        if got.startswith(("http://", "https://")):
+            return got
     return ""
 
 
