@@ -962,6 +962,8 @@ def unlisted_tools(plan, step):
     miss one and it can raise a false alarm: a reminder, not a guarantee."""
     text = step["cmd"] + "\n" + "\n".join(
         (plan.dir / s).read_text(errors="replace") for s in step["scripts"])
+    # a tool named in a comment is not a tool the step runs
+    text = re.sub(r"#[^\n]*", "", text)
     listed = {n for n, _ in step["uses"]}
     out = []
     for name, dep in plan.deps.items():
