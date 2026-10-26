@@ -78,7 +78,7 @@ def stamp_text(iso):
 
 
 def last_activity():
-    """When each page directory's contents last changed.
+    """When each page directory's contents were first and last changed, as (first, last).
 
     A page is a directory, so git already tracks one history per page. One walk of the log
     is cheaper than a call per page, and a page with no commit yet simply has none.
@@ -122,7 +122,7 @@ def last_activity():
     except OSError:
         return {}
 
-    seen, renamed_to, when = {}, {}, None
+    seen, born, renamed_to, when = {}, {}, {}, None
 
     def now_called(name):
         # the log is newest first, so a rename is read before the commits under the old name
@@ -150,8 +150,11 @@ def last_activity():
         else:
             page = page_of(fields[-1])
         if page:
+            # the walk is newest first, so the first sighting is the latest change and the
+            # last one standing is the commit the page arrived in
             seen.setdefault(now_called(page), when)
-    return {name: when for name, when in seen.items() if name in live}
+            born[now_called(page)] = when
+    return {name: (born[name], when) for name, when in seen.items() if name in live}
 
 
 def written(page_dir):
@@ -640,18 +643,22 @@ def build(site=None):
         # the timestamp orders, the date displays: two pages committed the same day
         # still sort in the order they were touched
         page_dir = Path(e["path"]).parent
-        e["stamp"] = activity.get(e["slug"]) or written(page_dir) or e["date"]
+        first, last = activity.get(e["slug"]) or ("", "")
+        e["stamp"] = last or written(page_dir) or e["date"]
         e["updated"] = stamp_text(e["stamp"])
+        # a page with no commit yet has only the date it declares
+        e["born"] = first or e["date"]
+        e["created"] = stamp_text(e["born"])
         e["why"] = L.gate(page_dir)
         e["prov"] = provenance(page_dir)
         if e["why"]:
             unsettled[e["slug"]] = e["why"]
-    recent = sorted(entries, key=lambda e: (e["date"], e["stamp"], e["slug"]), reverse=True)
+    recent = sorted(entries, key=lambda e: (e["born"], e["stamp"], e["slug"]), reverse=True)
     listed = [e for e in entries if not e["scratch"]]
     counts = Counter(t for e in listed for t in e["tags"])
     rows = read_sources()
 
-    months = Counter(e["date"][:7] for e in listed)
+    months = Counter(e["born"][:7] for e in listed)
     dates = "".join(
         f'<button class="tag" data-date="{m}" aria-pressed="false">'
         f'<span>{MONTHS[int(m[5:7])]} {m[:4]}</span><span class="n">{n}</span></button>'
@@ -698,10 +705,10 @@ def build(site=None):
             continue
         toc += (
             f'<a class="tocrow" href="@@ROOT@@{e["slug"]}/" data-rootlink="{e["slug"]}/" '
-            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
+            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["born"][:7]}" '
             f'title="{html.escape(e["title"])}">'
             f'<span class="toctitle">{html.escape(e["title"])}</span>'
-            f'<span class="tocdate">{e["date"]}</span>'
+            f'<span class="tocdate">{e["created"]}</span>'
             f'<span class="tocdate tocupd">{e["updated"]}</span></a>')
 
     # every dependency with a url that some page ran, then the reading list
