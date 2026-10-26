@@ -6,9 +6,12 @@ do it: an explicit --dir, else $NOTEBOOK_DIR, else the nearest ancestor of the w
 directory holding a notebook.yml.
 """
 import os
+import re
 from pathlib import Path
 
 CONFIG_NAME = "notebook.yml"
+ENV_NAME = "notebook.env"
+ENV_DEFAULT = ENV_NAME + ".default"
 
 DEFAULTS = {
     "title": "notebook",
@@ -51,11 +54,46 @@ def find_root(explicit=None):
     )
 
 
+def load_env(root):
+    """Per-installation values: notebook.env, which is not tracked and is where a path that
+    differs between machines belongs, then notebook.env.default, which is tracked and holds
+    the layout a fresh clone has. The environment wins over both, and the first file to give
+    a name wins over the second, so a clone builds and a machine can still differ.
+    """
+    for name_of in (ENV_NAME, ENV_DEFAULT):
+        f = root / name_of
+        for line in f.read_text().splitlines() if f.is_file() else []:
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            os.environ.setdefault(name.strip(), value.strip().strip("\"'"))
+
+
+def expand(value, where):
+    """${NAME} in the config, read from the environment. ${NAME:-default} is left alone: the
+    shell expands that one, in the commands it runs."""
+    if isinstance(value, str):
+        def one(m):
+            if m.group(1) not in os.environ:
+                raise SystemExit(f"{where}: ${{{m.group(1)}}} is not set. "
+                                 f"Put it in {ENV_NAME}, or in {ENV_DEFAULT} if every "
+                                 f"clone wants it")
+            return os.environ[m.group(1)]
+        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", one, value)
+    if isinstance(value, dict):
+        return {k: expand(v, where) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand(v, where) for v in value]
+    return value
+
+
 def load(explicit=None):
     """Return (root, conf) with every default filled in and paths resolved."""
     import yaml
     root = find_root(explicit)
-    raw = yaml.safe_load((root / CONFIG_NAME).read_text()) or {}
+    load_env(root)
+    raw = expand(yaml.safe_load((root / CONFIG_NAME).read_text()) or {}, CONFIG_NAME)
     conf = {**DEFAULTS, **raw}
     conf["serve"] = {**DEFAULTS["serve"], **(raw.get("serve") or {})}
     conf["share"] = {**DEFAULTS["share"], **(raw.get("share") or {})}
