@@ -20,8 +20,8 @@ this one, and is looked for in three places, first match winning: the environmen
 SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<name>. A tool has no path: it is
 whatever its version command finds.
 
-A renamed dependency says what it was, `formerly: old-name`, and a record made under that name
-is read under the new one.
+A dependency can be renamed freely. A record made under its old name is read under the one it
+has now, because a version identifies a checkout without the help of a name.
 
 A version is compared as a string. For a repository it is the checkout's commit, and for a
 tool it is the one line its version command prints, which can be a number, a commit, anything.
@@ -45,7 +45,7 @@ import re
 import subprocess
 from pathlib import Path
 
-FIELDS = {"url", "version", "path", "provision", "provides", "formerly"}
+FIELDS = {"url", "version", "path", "provision", "provides"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
@@ -87,26 +87,10 @@ def read(raw, where):
         if kind == "tool" and d.get("path") and not provision:
             raise SystemExit(f"{where}: {name} is a tool, which has no path: it is whatever "
                              f"its version command finds")
-        formerly = d.get("formerly") or []
-        formerly = [formerly] if isinstance(formerly, str) else list(formerly)
         out[str(name)] = {"url": (d.get("url") or "").strip(), "version": d.get("version"),
                           "path": d.get("path"), "kind": kind, "provision": provision,
-                          "provides": {str(k): str(v) for k, v in provides.items()},
-                          "formerly": [str(f) for f in formerly]}
-    for name, d in out.items():
-        for old in d["formerly"]:
-            if old in out or sum(old in e["formerly"] for e in out.values()) > 1:
-                raise SystemExit(f"{where}: {name} was formerly {old}, which names another dependency")
+                          "provides": {str(k): str(v) for k, v in provides.items()}}
     return out
-
-
-def current(use, deps=None):
-    """A name, or a name@version, under the name its dependency has now."""
-    name, at, ver = str(use).partition("@")
-    for now, dep in (DEPS if deps is None else deps).items():
-        if name in dep.get("formerly", ()):
-            return now + at + ver
-    return str(use)
 
 
 def merged(page_deps, page):

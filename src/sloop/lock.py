@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -306,17 +307,6 @@ def read_lock(page_dir):
     except yaml.YAMLError as e:
         raise SystemExit(f"{page_dir.name}: {LOCK} is not valid YAML\n  {e}")
     steps, accepted = doc.get("steps") or {}, doc.get("accepted") or []
-    # a record made under a dependency's former name is read under the one it has now
-    for rec in steps.values():
-        if rec.get("uses"):
-            rec["uses"] = [D.current(u) for u in rec["uses"]]
-        for path, made in (rec.get("made_with") or {}).items():
-            rec["made_with"][path] = [D.current(u) for u in made]
-    for a in accepted:
-        if isinstance(a.get("uses"), list):
-            a["uses"] = [D.current(u) for u in a["uses"]]
-        elif a.get("uses"):
-            a["uses"] = D.current(a["uses"])
     return {"steps": steps, "checks": doc.get("checks") or {},
             "accepted": accepted, "provisional": doc.get("provisional") or []}
 
@@ -350,6 +340,19 @@ def clean(use):
     return re.sub(r"(\+uncommitted|-dirty)$", "", use)
 
 
+def renamed(ran, now):
+    """Recorded uses under the names their dependencies have now. A version identifies a
+    checkout on its own, so a dependency that was renamed needs no declaration to be read."""
+    at = {}
+    for u in now:
+        at.setdefault(u.partition("@")[2], []).append(u)
+    out = []
+    for u in ran:
+        one = at.get(u.partition("@")[2]) or []
+        out.append(one[0] if len(one) == 1 else u)
+    return out
+
+
 def observe(plan, paths, fresh=False):
     """{path: digest} for the paths that are on disk."""
     out = {}
@@ -378,22 +381,32 @@ def inspect(plan, lock, fresh=False):
             out[name] = ("unrecorded", ["nothing records how its outputs were made"])
             continue
         was_out, was_in = rec.get("outputs") or {}, rec.get("inputs") or {}
+        wrote_h = Counter(was_out.values())
         moved = [f"{p} is not what this step wrote ({was_out.get(p, 'unrecorded')} -> {h})"
-                 for p, h in have_out.items() if was_out.get(p) != h]
+                 for p, h in have_out.items() if was_out.get(p) != h and not wrote_h[h]]
         if moved:
             out[name] = ("moved", moved)
             continue
-        why = []
         have_in = observe(plan, s["inputs"], fresh)
-        for p in s["inputs"]:
-            if p not in have_in:
-                why.append(f"{p} is not there")
-            elif p not in was_in:
+        why = [f"{p} is not there" for p in s["inputs"] if p not in have_in]
+        both = [p for p in s["inputs"] if p in have_in and p in was_in]
+        why += [f"{p} has changed ({was_in[p]} -> {have_in[p]})" for p in both
+                if was_in[p] != have_in[p]]
+        # What a step reads is its inputs' content, so a path it reads under a new name is
+        # unchanged. Only the paths that pair off by name are reported by name.
+        now_p = [p for p in s["inputs"] if p in have_in and p not in both]
+        was_p = [p for p in was_in if p not in both]
+        surplus = Counter(have_in[p] for p in now_p) - Counter(was_in[p] for p in was_p)
+        deficit = Counter(was_in[p] for p in was_p) - Counter(have_in[p] for p in now_p)
+        for p in now_p:
+            if surplus[have_in[p]]:
+                surplus[have_in[p]] -= 1
                 why.append(f"{p} is a new input")
-            elif was_in[p] != have_in[p]:
-                why.append(f"{p} has changed ({was_in[p]} -> {have_in[p]})")
-        why += [f"{p} is no longer an input" for p in was_in if p not in s["inputs"]]
-        if sorted(clean(u) for u in rec.get("uses") or []) != sorted(stated(s)):
+        for p in was_p:
+            if deficit[was_in[p]]:
+                deficit[was_in[p]] -= 1
+                why.append(f"{p} is no longer an input")
+        if sorted(renamed([clean(u) for u in rec.get("uses") or []], stated(s))) != sorted(stated(s)):
             why.append(f"the page states {', '.join(stated(s)) or 'no versions'}, and it ran "
                        f"{', '.join(rec.get('uses') or []) or 'none'}")
         for p in s["inputs"]:
@@ -533,7 +546,8 @@ def check_inputs(plan, lock, step):
         if by and by != step["name"]:
             prec = lock["steps"].get(by)
             wrote = (prec or {}).get("outputs", {}).get(o)
-            if plan.steps[by]["frozen"] and prec and o == p and wrote != now:
+            if (plan.steps[by]["frozen"] and prec and o == p and wrote != now
+                    and now not in ((prec or {}).get("outputs") or {}).values()):
                 bad.append(f"{p} is not what {by} recorded writing ({wrote} -> {now}). Rerun "
                            f"it by name, or: sloop accept {plan.name} {p} -m \"why\"")
         elif dep is not None:
@@ -658,7 +672,7 @@ def manifest_uses(at, root):
             found = doc.get("uses") or [u for e in doc.get("simulated") or [] if isinstance(e, dict)
                                         for u in e.get("uses") or []]
             found = [found] if isinstance(found, str) else found
-            return list(dict.fromkeys(D.current(u) for u in found if re.fullmatch(r"[^@\s]+@\S+", str(u))))
+            return list(dict.fromkeys(str(u) for u in found if re.fullmatch(r"[^@\s]+@\S+", str(u))))
         if d == root or d == d.parent:
             return []
         d = d.parent
