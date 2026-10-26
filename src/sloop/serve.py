@@ -296,7 +296,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.reply(404, {"error": "sharing is off"})
         from . import build as builder
         if method == "GET":
-            base = str(CONF["share"].get("url") or "").rstrip("/")
+            base = builder.share_url()
             return self.reply(200, {"shares": [
                 {"token": t, "page": pg, "when": w, "url": f"{base}/{t}/" if base else ""}
                 for t, pg, w in builder.shares()]})

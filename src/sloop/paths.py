@@ -29,8 +29,8 @@ DEFAULTS = {
     # literal colours in a figure and the stylesheet variable each stands for
     "figure_colors": {},
     "serve": {"port": 8099, "edit": True, "panes": []},
-    # a page shared at a revocable link: the share server's port, and the public url it
-    # is reachable at, which is a Funnel on that port and nothing else
+    # a page shared at a revocable link: the share server's port. The public url is read
+    # off the funnel that proxies that port; stating one here overrides that.
     "share": {"port": 8106, "url": ""},
 }
 

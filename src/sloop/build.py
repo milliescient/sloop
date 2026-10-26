@@ -54,6 +54,7 @@ from . import render as R
 ROOT = PAGES = SITE = BIB = None
 SOURCES, PALETTE = [], {}
 CONF, TITLE, REPO, BRANCH = {}, "notebook", "", "main"
+_share_url = None
 
 
 def init(root, conf):
@@ -582,10 +583,49 @@ def share(slug):
     d.mkdir(parents=True, exist_ok=True)
     export(slug, d / "index.html")
     (d / "page").write_text(f"{slug}\n{time.strftime('%Y-%m-%d %H:%M')}\n")
-    base = str(CONF["share"].get("url") or "").rstrip("/")
+    base = share_url()
     url = f"{base}/{token}/" if base else ""
-    print(f"  {url}" if url else f"  share/{token}/  (set share.url in notebook.yml to print the link)")
+    print(f"  {url}" if url else f"  share/{token}/  (no funnel reaches port "
+                                 f"{CONF['share']['port']}; set share.url to print the link)")
     return token, url
+
+
+def funnel_url(port):
+    """Where tailscale says a funnel reaches a port on this machine, or '' when none does.
+
+    `tailscale funnel status` prints the public base of each funnel, then the paths it
+    serves and what each proxies to. The one whose target is this port is the share server,
+    so the public prefix is that base and that path.
+    """
+    try:
+        out = subprocess.run(["tailscale", "funnel", "status"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    base = ""
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        on = re.match(r"(https://\S+)\s+\(Funnel on\)", line)
+        if on:
+            base = on.group(1).rstrip("/")
+            continue
+        at = re.match(r"\|--\s+(\S+)\s+proxy\s+https?://(?:127\.0\.0\.1|localhost):(\d+)", line)
+        if at and base and int(at.group(2)) == port:
+            path = at.group(1)
+            return base + ("" if path == "/" else "/" + path.strip("/"))
+    return ""
+
+
+def share_url():
+    """The public prefix a shared page is reachable at: what the config states, else what
+    the funnel serving share.port says, read once."""
+    global _share_url
+    if _share_url is None:
+        stated = str(CONF["share"].get("url") or "").rstrip("/")
+        _share_url = stated or funnel_url(int(CONF["share"]["port"]))
+    return _share_url
 
 
 def shares():
