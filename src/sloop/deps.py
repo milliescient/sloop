@@ -54,7 +54,16 @@ import re
 import subprocess
 from pathlib import Path
 
-FIELDS = {"url", "path", "checkout", "tools", "provision", "provides"}
+FIELDS = {"url", "source", "path", "checkout", "tools", "provision", "provides"}
+
+# Where a tool is looked for, when it is somewhere sloop already knows how to ask. The
+# command prints the commit the install recorded, else the release, so a page states one or
+# the other and nothing bespoke is written down.
+SOURCES = {
+    "r": "Rscript -e 'd <- packageDescription(commandArgs(TRUE)[1]); "
+         "cat(if (!is.null(d$RemoteSha)) substr(d$RemoteSha, 1, 12) else d$Version)' {name}",
+}
+HOMES = {"r": "https://cran.r-project.org/package={name}"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
@@ -82,7 +91,12 @@ def read(raw, where):
         if unknown:
             raise SystemExit(f"{where}: dependency {name} has no field {sorted(unknown)[0]!r}; "
                              f"the fields are {', '.join(sorted(FIELDS))}")
-        tools = d.get("tools") or {}
+        source = d.get("source")
+        if source is not None and source not in SOURCES:
+            raise SystemExit(f"{where}: {name} has source: {source}; it can be "
+                             f"{', '.join(sorted(SOURCES))}")
+        tools = d.get("tools") or ({str(name): SOURCES[source].format(name=name)}
+                                   if source else {})
         if not isinstance(tools, dict):
             raise SystemExit(f"{where}: {name}: tools is a mapping of a tool's name to the "
                              f"command that prints its version")
@@ -109,6 +123,7 @@ def read(raw, where):
         out[str(name)] = {"url": (d.get("url") or "").strip(),
                           "path": d.get("path"), "kind": kind, "provision": provision,
                           "checkout": str(d.get("checkout") or name),
+                          "source": source,
                           "tools": {str(k): v for k, v in tools.items()},
                           "provides": {str(k): str(v) for k, v in provides.items()}}
     for name, d in out.items():
@@ -334,7 +349,7 @@ def matches(name, dep, pinned, observed):
 def implicit(name):
     """A dependency nothing declares: a checkout of that name and no tools."""
     return {"url": "", "path": None, "kind": "repository", "provision": None,
-            "checkout": name, "tools": {}, "provides": {}}
+            "checkout": name, "source": None, "tools": {}, "provides": {}}
 
 
 def shown(name, dep, observed, pinned):
@@ -400,13 +415,21 @@ def link(name, dep, ver):
         return url
     clean = re.sub(r"(\+uncommitted|-dirty)$", "", ver)
     at, _ = locate(name, dep)
-    full = (git(at, "rev-parse", "--verify", "--quiet", clean + "^{commit}")
-            if at and at.is_dir() else None)
+    full = None
+    for ref in (clean, "v" + clean) if at and at.is_dir() else ():
+        full = git(at, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+        if full:
+            break
     if full:
         return f"{url.rstrip('/')}/commit/{full}"
     if re.fullmatch(r"[0-9a-f]{6,40}", clean):
         return f"{url.rstrip('/')}/commit/{clean}"
-    return url
+    return home(name, dep) or url
+
+
+def home(name, dep):
+    """Where a tool from a known source is published, for a version that is not a commit."""
+    return HOMES[dep["source"]].format(name=name) if dep.get("source") in HOMES else ""
 
 
 def environment(deps):
