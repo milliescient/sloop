@@ -125,10 +125,16 @@ def remotes_for(name, dep):
     return out
 
 
+def resolved(where):
+    """A location as git itself will use it, so an abstract url that a machine maps with
+    url.<base>.insteadOf is understood here too, and nothing names a machine in a page."""
+    return git(ROOT, "ls-remote", "--get-url", str(where)) or str(where)
+
+
 def supplies(where, sha):
     """Whether a remote already has a commit. Only a repository on this machine can answer
     that offline, so a url answers None and is found out by fetching."""
-    p = Path(where).expanduser()
+    p = Path(resolved(where)).expanduser()
     if p.is_dir() and git(p, "rev-parse", "--git-dir") is not None:
         return git(p, "cat-file", "-e", sha + "^{commit}") is not None
     return None
