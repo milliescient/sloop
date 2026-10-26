@@ -930,7 +930,8 @@ def accept(page_dir, target, why):
     if not why or not why.strip():
         raise SystemExit("sloop accept needs a reason: -m \"why the change was meant\"")
     confirm(f"accept the change to {target} on {plan.name}")
-    if target in plan.deps and plan.deps[target]["kind"] != "directory":
+    _, named = plan.owner(target)          # a tool is named, not the dependency it belongs to
+    if named is not None and named["kind"] != "directory":
         changed = None
         for name in plan.order:
             s, rec = plan.steps[name], lock["steps"].get(name)
