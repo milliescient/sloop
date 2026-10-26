@@ -34,6 +34,8 @@ has now, because a version identifies a checkout without the help of a name.
 
 A version is compared as a string. For a dependency it is its checkout's commit, and for a
 tool it is the one line its version command prints, which can be a number, a commit, anything.
+That command is run with its own dependency's checkout in $<NAME>, so it can ask the checkout
+without the path being written down anywhere.
 A version that names a commit or a tag of the checkout links to that commit; one that names
 neither links to the checkout itself.
 
@@ -305,7 +307,8 @@ def version(name, dep, at=None):
     cmd = dep["tools"].get(name)
     if cmd:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=ROOT,
-                           env=provided(name, dep, at) if at else None)
+                           env=provided(name, dep, at) if at
+                           else {**os.environ, **environment({name: dep})})
         lines = r.stdout.strip().splitlines()
         if r.returncode != 0 or not lines:
             out = (None, f"its version command failed: {(r.stderr.strip() or 'no output')[-200:]}")
