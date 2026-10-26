@@ -161,13 +161,15 @@ def last_activity():
     return {name: (born[name], when) for name, when in seen.items() if name in live}
 
 
-def written(page_dir):
-    """When a page with no commit yet was last written, in the form the log gives."""
+def written(page_dir, first=False):
+    """When a page with no commit yet was written, in the form the log gives: the oldest of
+    its files for when it started, the newest for when it last changed."""
     try:
-        newest = max(p.stat().st_mtime for p in page_dir.iterdir() if p.is_file())
+        pick = min if first else max
+        when = pick(p.stat().st_mtime for p in page_dir.iterdir() if p.is_file())
     except (OSError, ValueError):
         return ""
-    return datetime.fromtimestamp(newest).astimezone().isoformat(timespec="seconds")
+    return datetime.fromtimestamp(when).astimezone().isoformat(timespec="seconds")
 
 
 def parse(path):
@@ -648,8 +650,7 @@ def build(site=None):
         first, last = activity.get(e["slug"]) or ("", "")
         e["stamp"] = last or written(page_dir) or e["date"]
         e["updated"] = stamp_text(e["stamp"])
-        # a page with no commit yet has only the date it declares
-        e["born"] = first or e["date"]
+        e["born"] = first or written(page_dir, first=True) or e["date"]
         e["created"] = stamp_text(e["born"])
         e["why"] = L.gate(page_dir)
         e["prov"] = provenance(page_dir)
@@ -710,7 +711,7 @@ def build(site=None):
             f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["born"][:7]}" data-created="{e["born"]}" data-updated="{e["stamp"]}" '
             f'title="{html.escape(e["title"])}">'
             f'<span class="toctitle">{html.escape(e["title"])}</span>'
-            f'<span class="tocdate">{e["born"][:10]}</span>'
+            f'<span class="tocdate">{e["created"]}</span>'
             f'<span class="tocdate tocupd">{e["updated"]}</span></a>')
 
     # every dependency with a url that some page ran, then the reading list

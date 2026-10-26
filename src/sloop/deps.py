@@ -20,8 +20,10 @@ checkout, and that no path names, needs no entry at all: a used name with no ent
 to be a checkout of that name, and a name that resolves to no checkout is refused.
 
 `url` is a whole url, and is rarely needed: a checkout already records where it came from on
-its own `origin`, which is read and rewritten as a web address. Only a dependency with no
-checkout here has to write one. It may hold {version}, and then it is the link itself.
+its own `origin`, which is read and rewritten as a web address. A dependency with no checkout
+falls back to the first remote that is a web address, which resolves it by name, so only one
+whose owner no remote names has to write a url down. It may hold {version}, and then it is the
+link itself.
 
 Where a checkout sits is looked for in three places, first match winning: the environment
 variable SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<checkout>, which defaults to
@@ -167,12 +169,14 @@ def resolved(where):
 
 
 def supplies(where, sha):
-    """Whether a remote already has a commit. Only a repository on this machine can answer
-    that offline, so a url answers None and is found out by fetching."""
-    p = Path(resolved(where)).expanduser()
+    """Whether a remote already has a commit. A repository on this machine answers for
+    certain; a place on this machine that is not one answers no; a url answers None, which
+    only fetching settles."""
+    at = resolved(where)
+    p = Path(at).expanduser()
     if p.is_dir() and git(p, "rev-parse", "--git-dir") is not None:
         return git(p, "cat-file", "-e", sha + "^{commit}") is not None
-    return None
+    return None if ("://" in at or "@" in at) else False
 
 
 def fetch_commit(base, name, dep, sha):
@@ -362,8 +366,18 @@ def origin_url(name, dep):
 
 
 def url_of(name, dep):
-    """A dependency's url: the one it declares, else the one its checkout came from."""
-    return (dep.get("url") or "").strip() or origin_url(name, dep)
+    """A dependency's url: the one it declares, else the one its checkout came from, else the
+    first remote that is a web address, which names an owner and so can resolve it by name."""
+    raw = (dep.get("url") or "").strip()
+    if raw:
+        return raw
+    got = origin_url(name, dep)
+    if got:
+        return got
+    for _, where in remotes_for(name, dep):
+        if where.startswith(("http://", "https://")):
+            return where
+    return ""
 
 
 def link(name, dep, ver):
