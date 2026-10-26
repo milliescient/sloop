@@ -13,7 +13,7 @@ CONFIG_NAME = "notebook.yml"
 DEFAULTS = {
     "title": "notebook",
     "repo": "",
-    "branch": "main",   # the branch the repo links point at
+    "branch": "",       # the branch repo links point at; read off the checkout when empty
     "pages": "pages",
     "out": "site",
     # the sidebar's reading list: rows of name, kind, url, note

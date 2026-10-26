@@ -19,10 +19,9 @@ and a tool need not be named after the thing it was built from. A dependency tha
 checkout, and that no path names, needs no entry at all: a used name with no entry is taken
 to be a checkout of that name, and a name that resolves to no checkout is refused.
 
-`url` is where a thing comes from. It is rarely needed, because a checkout already records
-that on its own `origin`, which is read and rewritten as a web address. One written as
-owner/repo is expanded through the first remote whose location is a web address, so a host is
-written once for the whole notebook. It may hold {version}, and then it is the link itself.
+`url` is a whole url, and is rarely needed: a checkout already records where it came from on
+its own `origin`, which is read and rewritten as a web address. Only a dependency with no
+checkout here has to write one. It may hold {version}, and then it is the link itself.
 
 Where a checkout sits is looked for in three places, first match winning: the environment
 variable SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<checkout>, which defaults to
@@ -345,34 +344,26 @@ def shown(name, dep, observed, pinned):
 _urls = {}
 
 
-def origin_url(name, dep):
+def origin_of(at):
     """Where a checkout came from, read off its own remote and written as a web address, so
-    nothing has to be declared for a dependency that is checked out here."""
-    if name in _urls:
-        return _urls[name]
-    at, _ = locate(name, dep)
-    raw = git(at, "remote", "get-url", "origin") if at and at.is_dir() else None
-    out = ""
-    if raw:
-        ssh = re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?", raw)
-        out = f"https://{ssh.group(1)}/{ssh.group(2)}" if ssh else re.sub(r"\.git/?$", "", raw)
-    _urls[name] = out
-    return out
+    nothing has to be declared for anything that is checked out here."""
+    raw = git(at, "remote", "get-url", "origin") if at and Path(at).is_dir() else None
+    if not raw:
+        return ""
+    ssh = re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?", raw)
+    return f"https://{ssh.group(1)}/{ssh.group(2)}" if ssh else re.sub(r"\.git/?$", "", raw)
+
+
+def origin_url(name, dep):
+    """Where a dependency's checkout came from."""
+    if name not in _urls:
+        _urls[name] = origin_of(locate(name, dep)[0])
+    return _urls[name]
 
 
 def url_of(name, dep):
-    """A dependency's url: the one it declares, else the one its checkout came from, else a
-    name expanded through the first remote whose location is a web address."""
-    raw = (dep.get("url") or "").strip()
-    if raw and "://" in raw:
-        return raw
-    got = origin_url(name, dep)
-    if got:
-        return got
-    for _, where in remotes_for(name, dep):
-        if where.startswith(("http://", "https://")):
-            return where
-    return ""
+    """A dependency's url: the one it declares, else the one its checkout came from."""
+    return (dep.get("url") or "").strip() or origin_url(name, dep)
 
 
 def link(name, dep, ver):

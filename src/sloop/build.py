@@ -61,7 +61,11 @@ def init(root, conf):
     ROOT, CONF = root, conf
     PAGES, SITE = conf["pages"], conf["out"]
     SOURCES = conf.get("sources") or []
-    TITLE, REPO, BRANCH = conf["title"], conf["repo"], conf["branch"]
+    # the notebook records where it came from and which branch it is on, exactly as a
+    # dependency's checkout does, so notebook.yml only says so to override it
+    TITLE = conf["title"]
+    REPO = conf["repo"] or D.origin_of(ROOT)
+    BRANCH = conf["branch"] or D.git(ROOT, "rev-parse", "--abbrev-ref", "HEAD") or "main"
     BIB = R.Bibliography(conf["bibliography"])
     PALETTE = {R.colour(str(k)): str(v).lstrip("-") for k, v in (conf.get("figure_colors") or {}).items()}
     D.init(root, conf)
@@ -703,10 +707,10 @@ def build(site=None):
             continue
         toc += (
             f'<a class="tocrow" href="@@ROOT@@{e["slug"]}/" data-rootlink="{e["slug"]}/" '
-            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["born"][:7]}" '
+            f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["born"][:7]}" data-created="{e["born"]}" data-updated="{e["stamp"]}" '
             f'title="{html.escape(e["title"])}">'
             f'<span class="toctitle">{html.escape(e["title"])}</span>'
-            f'<span class="tocdate">{e["created"]}</span>'
+            f'<span class="tocdate">{e["born"][:10]}</span>'
             f'<span class="tocdate tocupd">{e["updated"]}</span></a>')
 
     # every dependency with a url that some page ran, then the reading list
@@ -734,8 +738,10 @@ def build(site=None):
               "filters": filters, "dates": dates, "sources": srcs}
     index_main = ('<p class="empty" id="empty">Nothing matches every filter selected.</p>'
                   '<div id="tocwrap"><div class="tochead"><span class="label">Page</span>'
-                  '<button class="sortbtn" id="sortdate" type="button">Created '
-                  '<span class="arrow" id="sortarrow">&darr;</span></button><span class="label">Updated</span></div>'
+                  '<button class="sortbtn sorton" data-key="created" type="button">Created '
+                  '<span class="arrow">&darr;</span></button>'
+                  '<button class="sortbtn" data-key="updated" type="button">Updated '
+                  '<span class="arrow"></span></button></div>'
                   f'<nav class="toc" id="toc">{toc}</nav></div>')
     pages = [("index.html", shell(0, TITLE, index_main, shared))]
     for e in recent:
@@ -981,6 +987,7 @@ STYLE = r"""
     letter-spacing:.11em; color:var(--muted); background:none; border:0; cursor:pointer;
     padding:0; display:inline-flex; gap:.4em; align-items:baseline; }
   .sortbtn:hover { color:var(--accent); }
+  .sortbtn.sorton { color:var(--ink); }
   .sortbtn .arrow { font-size:.8em; }
   .toc { display:flex; flex-direction:column; border-top:1px solid var(--rule); }
   .tocrow { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:var(--s3);
@@ -992,7 +999,8 @@ STYLE = r"""
   .tocdate { font-family:var(--mono); font-size:.7rem; color:var(--muted);
     font-variant-numeric:tabular-nums; }
   /* the two date columns line up only if each reserves the same room */
-  .tochead .label:last-child, .tocupd { min-width:9.5em; text-align:right; }
+  .tochead .sortbtn:last-child, .tocupd { min-width:9.5em; justify-content:flex-end;
+    text-align:right; }
   /* a title that still will not fit is clipped rather than wrapped; the row carries it
      in a title attribute */
   .toctitle { font-size:1rem; line-height:1.3; white-space:nowrap; overflow:hidden;
@@ -1282,7 +1290,7 @@ APP = r"""(function () {
   /* ---- the contents page: filters over the list ----
      The filter state lives in the hash of the contents page only. A tag clicked anywhere
      else goes to the contents with that one filter on. */
-  var tagsOn = new Set(), monthsOn = new Set(), newestFirst = true;
+  var tagsOn = new Set(), monthsOn = new Set(), newestFirst = true, sortKey = "created";
   function toc() { return document.getElementById("toc"); }
   function matches(el) {
     var t = (el.getAttribute("data-tags") || "").split("|"), ok = true;
@@ -1357,13 +1365,23 @@ APP = r"""(function () {
       return;
     }
     if (ev.target.id === "reset") { tagsOn.clear(); monthsOn.clear(); paint(); sync(); return; }
-    if (ev.target.closest && ev.target.closest("#sortdate")) {
+    var btn = ev.target.closest && ev.target.closest(".sortbtn");
+    if (btn) {
       var tc = toc();
       if (!tc) return;
-      newestFirst = !newestFirst;
-      var arrow = document.getElementById("sortarrow");
-      if (arrow) arrow.innerHTML = newestFirst ? "&darr;" : "&uarr;";
-      [].slice.call(tc.querySelectorAll(".tocrow")).reverse().forEach(function (el) { tc.appendChild(el); });
+      // the column already sorted on turns around; another column starts newest first
+      newestFirst = sortKey === btn.dataset.key ? !newestFirst : true;
+      sortKey = btn.dataset.key;
+      [].slice.call(document.querySelectorAll(".sortbtn")).forEach(function (b) {
+        b.classList.toggle("sorton", b === btn);
+        b.querySelector(".arrow").innerHTML = b === btn ? (newestFirst ? "&darr;" : "&uarr;") : "";
+      });
+      var rows = [].slice.call(tc.querySelectorAll(".tocrow"));
+      rows.sort(function (a, b) {
+        var x = a.dataset[sortKey] || "", y = b.dataset[sortKey] || "";
+        return (x < y ? -1 : x > y ? 1 : 0) * (newestFirst ? -1 : 1);
+      });
+      rows.forEach(function (el) { tc.appendChild(el); });
     }
   });
 
