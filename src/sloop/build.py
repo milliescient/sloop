@@ -646,7 +646,7 @@ def build(site=None):
         e["prov"] = provenance(page_dir)
         if e["why"]:
             unsettled[e["slug"]] = e["why"]
-    recent = sorted(entries, key=lambda e: (e["stamp"], e["slug"]), reverse=True)
+    recent = sorted(entries, key=lambda e: (e["date"], e["stamp"], e["slug"]), reverse=True)
     listed = [e for e in entries if not e["scratch"]]
     counts = Counter(t for e in listed for t in e["tags"])
     rows = read_sources()
@@ -701,7 +701,8 @@ def build(site=None):
             f'data-tags="{html.escape("|".join(e["tags"]))}" data-month="{e["date"][:7]}" '
             f'title="{html.escape(e["title"])}">'
             f'<span class="toctitle">{html.escape(e["title"])}</span>'
-            f'<span class="tocdate">{e["updated"]}</span></a>')
+            f'<span class="tocdate">{e["date"]}</span>'
+            f'<span class="tocdate tocupd">{e["updated"]}</span></a>')
 
     # every dependency with a url that some page ran, then the reading list
     ref_only = {r[2].rstrip("/") for r in rows if r[1] == "ref-only"}
@@ -722,12 +723,13 @@ def build(site=None):
         f'<a class="src" href="{u}" rel="noreferrer">{html.escape(n)}</a>'
         for n, u in listed_srcs)
 
-    shared = {"rail": rail, "latest": recent[0]["updated"], "n": len(entries),
+    shared = {"rail": rail, "latest": stamp_text(max(e["stamp"] for e in entries)),
+              "n": len(entries),
               "filters": filters, "dates": dates, "sources": srcs}
     index_main = ('<p class="empty" id="empty">Nothing matches every filter selected.</p>'
                   '<div id="tocwrap"><div class="tochead"><span class="label">Page</span>'
-                  '<button class="sortbtn" id="sortdate" type="button">Updated '
-                  '<span class="arrow" id="sortarrow">&darr;</span></button></div>'
+                  '<button class="sortbtn" id="sortdate" type="button">Created '
+                  '<span class="arrow" id="sortarrow">&darr;</span></button><span class="label">Updated</span></div>'
                   f'<nav class="toc" id="toc">{toc}</nav></div>')
     pages = [("index.html", shell(0, TITLE, index_main, shared))]
     for e in recent:
@@ -967,7 +969,7 @@ STYLE = r"""
   .entry li { margin-bottom:var(--s1); }
   .entry li:last-child { margin-bottom:0; }
   .tags { display:flex; flex-wrap:wrap; gap:var(--s1); margin:0; }
-  .tochead { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--s3);
+  .tochead { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:var(--s3);
     align-items:baseline; padding:0 .3rem .35rem; }
   .sortbtn { font-family:var(--mono); font-size:.68rem; text-transform:uppercase;
     letter-spacing:.11em; color:var(--muted); background:none; border:0; cursor:pointer;
@@ -975,7 +977,7 @@ STYLE = r"""
   .sortbtn:hover { color:var(--accent); }
   .sortbtn .arrow { font-size:.8em; }
   .toc { display:flex; flex-direction:column; border-top:1px solid var(--rule); }
-  .tocrow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--s3);
+  .tocrow { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:var(--s3);
     align-items:baseline; padding:.55rem .3rem; text-decoration:none;
     color:var(--ink); border-bottom:1px solid var(--rule); }
   .tocrow:visited { color:var(--ink); }
@@ -983,6 +985,8 @@ STYLE = r"""
   .tocrow:hover .toctitle { color:var(--accent); }
   .tocdate { font-family:var(--mono); font-size:.7rem; color:var(--muted);
     font-variant-numeric:tabular-nums; }
+  /* the two date columns line up only if each reserves the same room */
+  .tochead .label:last-child, .tocupd { min-width:9.5em; text-align:right; }
   /* a title that still will not fit is clipped rather than wrapped; the row carries it
      in a title attribute */
   .toctitle { font-size:1rem; line-height:1.3; white-space:nowrap; overflow:hidden;
