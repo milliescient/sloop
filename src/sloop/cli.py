@@ -30,7 +30,7 @@ from pathlib import Path
 
 from . import build as builder
 from . import lock as locker
-from . import paths, scaffold, serve as server
+from . import deps, paths, scaffold, serve as server
 
 SKELETON = """title: {title}
 repo:            # https://github.com/you/{title}, for the per-page source links
@@ -296,7 +296,7 @@ def main(argv=None):
         locker.prune()
         return
     if a.cmd == "new":
-        scaffold.new(conf["pages"], a.name, a.title, conf.get("dependencies") or {})
+        scaffold.new(conf["pages"], a.name, a.title, deps.DEPS)
         return
 
     site = Path(a.out).expanduser().resolve() if a.out else conf["out"]

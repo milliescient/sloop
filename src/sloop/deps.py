@@ -306,9 +306,12 @@ def version(name, dep, at=None):
         return _versions[key]
     cmd = dep["tools"].get(name)
     if cmd:
+        # its own checkout under the tool's name and under its dependency's, so either reads
+        own = {n: d for n, d in DEPS.items() if d is dep}
+        own[name] = dep
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=ROOT,
                            env=provided(name, dep, at) if at
-                           else {**os.environ, **environment({name: dep})})
+                           else {**os.environ, **environment(own)})
         lines = r.stdout.strip().splitlines()
         if r.returncode != 0 or not lines:
             out = (None, f"its version command failed: {(r.stderr.strip() or 'no output')[-200:]}")
