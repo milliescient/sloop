@@ -49,12 +49,14 @@ FIELDS = {"url", "version", "path", "provision", "provides"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
+REMOTES = {}
 
 
 def init(root, conf):
-    global ROOT, CHECKOUTS, DEPS
+    global ROOT, CHECKOUTS, DEPS, REMOTES
     ROOT, CHECKOUTS = root, conf["checkouts"]
     DEPS = read(conf.get("dependencies") or {}, "notebook.yml")
+    REMOTES = remotes(conf.get("remotes") or {}, "notebook.yml")
     _versions.clear()
 
 
@@ -103,6 +105,64 @@ def merged(page_deps, page):
     return {**DEPS, **extra}
 
 
+def remotes(raw, where):
+    """Where a stated commit is looked for when the checkout here does not have it, in the
+    order given. A location holds {name} for the dependency's name and {url} for its own."""
+    if isinstance(raw, list):
+        raw = {str(e): str(e) for e in raw}
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{where}: remotes must be a mapping of a name to a location")
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def remotes_for(name, dep):
+    """(remote, location) for each remote that could supply a dependency, in order."""
+    out = []
+    for at, template in REMOTES.items():
+        where = template.replace("{name}", name).replace("{url}", dep.get("url") or "")
+        if where and "{" not in where:
+            out.append((at, where))
+    return out
+
+
+def supplies(where, sha):
+    """Whether a remote already has a commit. Only a repository on this machine can answer
+    that offline, so a url answers None and is found out by fetching."""
+    p = Path(where).expanduser()
+    if p.is_dir() and git(p, "rev-parse", "--git-dir") is not None:
+        return git(p, "cat-file", "-e", sha + "^{commit}") is not None
+    return None
+
+
+def fetch_commit(base, name, dep, sha):
+    """Bring a stated commit into a checkout from the first remote that has it. A remote
+    serves a bare commit only where it is configured to, so each is also asked for its
+    branches, which any remote answers."""
+    spec = f"+refs/heads/*:refs/remotes/sloop/{name}/*"
+    for at, where in remotes_for(name, dep):
+        if supplies(where, sha) is False:
+            continue
+        for ref in (sha, spec):
+            r = subprocess.run(["git", "-C", str(base), "fetch", "--no-tags", "--quiet",
+                                str(where), ref], capture_output=True, text=True)
+            if r.returncode == 0 and git(base, "rev-parse", "--verify", "--quiet", sha + "^{commit}"):
+                return at
+    return None
+
+
+def fetch_hint(name, dep, sha):
+    """What sloop would do about a commit the checkout here does not have, said without
+    fetching, because status never reaches the network."""
+    tried = remotes_for(name, dep)
+    for at, where in tried:
+        if supplies(where, sha):
+            return f"{at} has it, and sloop make fetches it from there"
+    unknown = [at for at, where in tried if supplies(where, sha) is None]
+    if unknown:
+        return f"sloop make looks for it in {', '.join(unknown)}"
+    return "fetch it"
+
+
 def env_name(name):
     return re.sub(r"[^A-Z0-9]", "_", name.upper())
 
@@ -142,8 +202,10 @@ def provisioned(name, dep, pinned, create=False):
     if git(base, "rev-parse", "--git-dir") is None:
         return None, f"{name}'s source is not on this machine: {base} is not a git checkout"
     full = git(base, "rev-parse", "--verify", "--quiet", pinned + "^{commit}")
+    if full is None and create and fetch_commit(base, name, dep, pinned):
+        full = git(base, "rev-parse", "--verify", "--quiet", pinned + "^{commit}")
     if full is None:
-        return None, f"{base} has no commit {pinned}: fetch it"
+        return None, f"{base} has no commit {pinned}: {fetch_hint(name, dep, pinned)}"
     at = CHECKOUTS / ".sloop" / name / full[:12]
     if at.is_dir():
         if git(at, "rev-parse", "HEAD") != full:
