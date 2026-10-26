@@ -208,7 +208,7 @@ def provenance(page_dir):
     def use(u):
         name, _, ver = u.partition("@")
         dep = plan.deps.get(name)
-        href = D.link(dep, ver) if dep else ""
+        href = D.link(name, dep, ver) if dep else ""
         label = html.escape(u)
         return (f'<a class="ref" href="{html.escape(href)}" rel="noreferrer">{label}</a>' if href
                 else f'<span class="ref">{label}</span>')
@@ -227,8 +227,9 @@ def provenance(page_dir):
                 return ""
             return f"{REPO}/blob/{BRANCH}/{rel.as_posix()}" if REPO else ""
         ver = re.sub(r"(\+uncommitted|-dirty)$", "", pinned.get(first, ""))
-        if rest and "github.com" in dep["url"] and re.fullmatch(r"[0-9a-f]{6,40}", ver):
-            return f'{dep["url"].rstrip("/")}/blob/{ver}/{rest}'
+        at = D.url_of(first, dep)
+        if rest and "github.com" in at and re.fullmatch(r"[0-9a-f]{6,40}", ver):
+            return f'{at.rstrip("/")}/blob/{ver}/{rest}'
         return ""
 
     def row(label, cell):
@@ -289,12 +290,20 @@ def provenance(page_dir):
 
 
 def read_sources():
-    """The reading list, as [name, kind, url, note] rows. It lives in notebook.yml."""
+    """The reading list, as [name, kind, url, note] rows. It lives in notebook.yml.
+
+    A dependency a page ran is already listed, so an entry here is an extra, or a better name
+    and note for one of them. Such an entry says `dep` rather than repeating its url.
+    """
     rows = []
     for r in SOURCES:
         if not isinstance(r, dict) or not r.get("name"):
-            raise SystemExit("notebook.yml: each of sources needs a name, and may have kind, url, note")
-        rows.append([str(r.get(k) or "") for k in ("name", "kind", "url", "note")])
+            raise SystemExit("notebook.yml: each of sources needs a name, and may have "
+                             "kind, url, note, and dep to name the dependency it describes")
+        url, ref = str(r.get("url") or ""), str(r.get("dep") or "")
+        if not url and ref in D.DEPS:
+            url = D.url_of(ref, D.DEPS[ref])
+        rows.append([str(r["name"]), str(r.get("kind") or ""), url, str(r.get("note") or "")])
     return rows
 
 
@@ -702,7 +711,7 @@ def build(site=None):
         plan = L.Plan(Path(e["path"]).parent, strict=False)
         for step in plan.steps.values():
             for name, _ in step["uses"]:
-                u = plan.deps[name]["url"].rstrip("/")
+                u = D.url_of(name, plan.deps[name]).rstrip("/")
                 if u and "{version}" not in u and u not in ref_only:
                     cited.setdefault(u, named.get(u, name))
     listed_srcs = [(name, url) for url, name in cited.items()]

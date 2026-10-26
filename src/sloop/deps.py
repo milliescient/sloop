@@ -118,8 +118,12 @@ def remotes(raw, where):
 def remotes_for(name, dep):
     """(remote, location) for each remote that could supply a dependency, in order."""
     out = []
+    raw = dep.get("url") or ""
     for at, template in REMOTES.items():
-        where = template.replace("{name}", name).replace("{url}", dep.get("url") or "")
+        # a url written in full needs no host supplied for it
+        if "{url}" in template and "://" in raw and template.strip() != "{url}":
+            continue
+        where = template.replace("{name}", name).replace("{url}", raw)
         if where and "{" not in where:
             out.append((at, where))
     return out
@@ -302,16 +306,34 @@ def shown(dep, observed, pinned):
     return clean[:max(len(pinned), 7)] + observed[len(clean):]
 
 
-def link(dep, ver):
+def url_of(name, dep):
+    """A dependency's url. One written as owner/repo is expanded through the first remote
+    whose location is a web address, so the host is written once for the whole notebook."""
+    raw = (dep.get("url") or "").strip()
+    if not raw or "://" in raw:
+        return raw
+    for _, where in remotes_for(name, dep):
+        if where.startswith(("http://", "https://")):
+            return where
+    return ""
+
+
+def link(name, dep, ver):
     """The url behind a version shown on a page, or '' for plain text."""
-    url = dep["url"]
+    raw = (dep.get("url") or "").strip()
+    if "{version}" in raw:
+        return raw.replace("{version}", ver)
+    url = url_of(name, dep)
     if not url:
         return ""
-    if "{version}" in url:
-        return url.replace("{version}", ver)
     clean = re.sub(r"(\+uncommitted|-dirty)$", "", ver)
-    if "github.com" in url and re.fullmatch(r"[0-9a-f]{6,40}", clean):
-        return f"{url.rstrip('/')}/commit/{clean}"
+    # a version can carry the commit rather than be it, as "1.1.0-ac87d11a0de5" does
+    at = clean if re.fullmatch(r"[0-9a-f]{6,40}", clean) else None
+    if at is None:
+        tail = re.search(r"[-_]([0-9a-f]{7,40})$", clean)
+        at = tail.group(1) if tail else None
+    if "github.com" in url and at:
+        return f"{url.rstrip('/')}/commit/{at}"
     return url
 
 
