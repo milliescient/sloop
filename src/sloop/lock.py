@@ -242,9 +242,6 @@ class Plan:
         dep = self.deps.get(first)
         if dep is None:
             return self.dir / path, None
-        if dep["kind"] == "tool":
-            raise SystemExit(f"{self.name}: {path} starts with {first}, which is a tool and "
-                             f"has no path. Name a repository or a data directory.")
         root, _ = D.locate(first, dep)
         return (root / rest if rest else root), first
 
@@ -259,7 +256,7 @@ class Plan:
         """Whether the dependency a path sits in is on this machine at all."""
         first = path.partition("/")[0]
         dep = self.deps.get(first)
-        return dep is None or dep["kind"] == "tool" or D.locate(first, dep)[0].is_dir()
+        return dep is None or D.locate(first, dep)[0].is_dir()
 
     def producer(self, path):
         """The step that writes a path, or writes a directory holding it, or part of it."""

@@ -107,9 +107,14 @@ def read(raw, where):
         # on a machine that has not got it.
         at, _ = checkout(str(name), {"path": d.get("path"),
                                      "checkout": str(d.get("checkout") or name)})
-        kind = ("tool" if tools else
-                "directory" if at.is_dir() and git(at, "rev-parse", "--git-dir") is None
-                else "repository")
+        if tools:
+            kind = "tool"
+        elif at.is_dir():
+            kind = "repository" if git(at, "rev-parse", "--git-dir") else "directory"
+        else:
+            # not here to look at, so go by what was declared: a stated path is a plain
+            # directory and anything else is a checkout, the same answer on every machine
+            kind = "directory" if d.get("path") else "repository"
         provision, provides = d.get("provision"), d.get("provides") or {}
         if provision not in (None, "worktree"):
             raise SystemExit(f"{where}: {name} has provision: {provision}; it can be worktree")

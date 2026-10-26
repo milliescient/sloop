@@ -33,24 +33,23 @@ from . import lock as locker
 from . import deps, paths, scaffold, serve as server
 
 SKELETON = """title: {title}
-repo:            # https://github.com/you/{title}, for the per-page source links
-branch: main
 
+# repo and branch are read off this checkout; set them here only to override that
 # pages: pages    # where the page directories live
 # out: site       # where the built notebook is written
-# checkouts: ..   # where a repository or a data directory is looked for by default
+# checkouts: ..   # where a checkout is looked for when it gives no path of its own
 # bibliography: references.bib
 
-# What a page can depend on. An entry with a version command is a tool, one with only a url
-# is a repository checked out on disk, and one with neither is a data directory.
+# What a page can depend on: one checkout, and any number of tools. The checkout is found
+# under `checkouts` by the dependency's own name, and its url is read off its own remote, so
+# neither is written here. A page states dependency@commit or tool@version.
 # dependencies:
-#   sim:
-#     url: https://github.com/you/sim
-#     version: sim --version
-#   R:
-#     version: Rscript -e 'cat(as.character(getRversion()))'
+#   sim:                              # a checkout, carrying a tool of the same name
+#     tools: {{sim: sim --version}}
+#   palaeoverse:
+#     source: r                       # an installed R package: sloop asks it, and links CRAN
 #   data:
-#     path: /data/study
+#     path: /data/study               # a plain directory, not a checkout
 
 # The sidebar's reading list.
 # sources:
