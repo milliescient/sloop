@@ -328,12 +328,16 @@ def library_markup():
     Every key in references.bib with a pdf beside it is a paper. The pane lists them, and a
     paper's own page puts its pdf wide with its notes lifted into the pane. A key with no
     pdf gets a stub page that primes the import box, so a citation is never a dead link.
+    A pdf named <key>_<what> is another file of that paper, listed on its page.
     """
     refs = BIB.load()
     if not refs:
         return None
     lib = ROOT / "library"
-    pdfs = {f.stem for f in (lib / "pdf").glob("*.pdf")} if (lib / "pdf").is_dir() else set()
+    have = {f.stem for f in (lib / "pdf").glob("*.pdf")} if (lib / "pdf").is_dir() else set()
+    pdfs = have & set(refs)
+    # a second pdf for a paper is named after its key, so a supplement is not a paper of its own
+    extra = {k: sorted(s for s in have - pdfs if s.startswith(k + "_")) for k in pdfs}
     notes = {}
     for f in lib.glob("*.json") if lib.is_dir() else []:
         try:
@@ -427,7 +431,8 @@ def library_markup():
         "pane": f'<div id="liblist">{lead}{rows}</div>',
         "rows": rows,
         "notes": {k: notes_html(k) for k in order if k in pdfs},
-        "pdfs": sorted(pdfs & set(refs)),
+        "pdfs": sorted(pdfs),
+        "extra": extra,
         "stubs": {k: str((refs.get(k) or {}).get("doi") or "") for k in order if k not in pdfs},
     }
 
@@ -463,12 +468,16 @@ def entry_html(e):
       </section>"""
 
 
-def paper_main(key, notes):
+def paper_main(key, notes, extra=()):
     k = html.escape(key)
+    more = "".join(
+        f'<a class="ref" href="@@ROOT@@library/pdf/{html.escape(s)}.pdf" '
+        f'rel="noreferrer">{html.escape(s[len(key) + 1:].replace("_", " "))}</a>' for s in extra)
     return (f'<div class="paperpage" data-key="{k}" '
             f'data-title="{html.escape(BIB.names(key))} {html.escape(BIB.year(key))}">'
             f'<div class="papernotes" hidden>{notes}</div>'
-            f'<iframe class="paperframe" title="{k}" src="@@ROOT@@library/pdf/{k}.pdf"></iframe>'
+            + (f'<p class="papermore">with {more}</p>' if more else "")
+            + f'<iframe class="paperframe" title="{k}" src="@@ROOT@@library/pdf/{k}.pdf"></iframe>'
             '</div>')
 
 
@@ -755,7 +764,8 @@ def build(site=None):
         for key in LIB["pdfs"]:
             pages.append((f"library/{key}/index.html",
                           shell(2, f"{BIB.names(key)} {BIB.year(key)} · {TITLE}",
-                                paper_main(key, LIB["notes"].get(key, "")), shared)))
+                                paper_main(key, LIB["notes"].get(key, ""),
+                                           LIB["extra"].get(key, ())), shared)))
         for key, doi in LIB["stubs"].items():
             pages.append((f"library/{key}/index.html",
                           shell(2, f"{BIB.names(key)} {BIB.year(key)} · {TITLE}",
@@ -880,6 +890,9 @@ STYLE = r"""
   .librow { display:block; text-decoration:none; color:inherit; padding:var(--s2) 0;
     border-bottom:1px solid var(--rule); }
   .librow:hover { background:var(--ground, rgba(0,0,0,.03)); }
+  .papermore { font-family:var(--mono); font-size:.72rem; color:var(--muted);
+    margin:0 0 var(--s1); }
+  .papermore .ref { margin-left:.4em; }
   .libwho { display:block; font-family:var(--mono); font-size:.64rem; letter-spacing:.05em;
     color:var(--muted); }
   .libtitle { display:block; color:var(--ink); }
