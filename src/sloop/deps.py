@@ -1,51 +1,59 @@
 """What a page can depend on, where it is on this machine, and what version it is at.
 
-Everything is declared once, in notebook.yml:
+A dependency is one checkout, and it may carry tools. Both are declared in notebook.yml:
 
     dependencies:
-      simfbdr:                       # has a version command: a tool
-        url: https://github.com/you/simfbdr
-        version: simfbdr --version
-      pbdb-families:                # a url and no version command: a repository checked out
-        url: https://github.com/you/pbdb-families
-      sbc:                          # neither: a data directory
-        path: /data/sbc
+      revbayes:                     # a checkout under <checkouts>, found by this name
+        tools:
+          rb: strings "$(command -v rb)" | sed 's/.*-g//'
+      palaeoverse:                  # no checkout here, so the url is written down
+        url: palaeoverse/palaeoverse
+        tools: {palaeoverse: Rscript -e 'cat(...)'}
+      divDyn:
+        checkout: r-package         # the directory is not named after the dependency
+      sbc:
+        path: /data/sbc             # a plain directory, not a repository
 
-The kind is read off the fields rather than declared, because the kinds are not exclusive: a
-tool usually has a source url too. `sloop status` prints the kind it found, and an unknown
-field is refused, so a misspelt `version` cannot quietly turn a tool into a repository.
+A page states `dependency@commit` or `tool@version`, so one checkout can carry several tools
+and a tool need not be named after the thing it was built from. A dependency that is only a
+checkout, and that no path names, needs no entry at all: a used name with no entry is taken
+to be a checkout of that name, and a name that resolves to no checkout is refused.
 
-`url` is where a thing comes from and is the same on every machine. `path` is where it sits on
-this one, and is looked for in three places, first match winning: the environment variable
-SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<name>. A tool has no path: it is
-whatever its version command finds.
+`url` is where a thing comes from. It is rarely needed, because a checkout already records
+that on its own `origin`, which is read and rewritten as a web address. One written as
+owner/repo is expanded through the first remote whose location is a web address, so a host is
+written once for the whole notebook. It may hold {version}, and then it is the link itself.
+
+Where a checkout sits is looked for in three places, first match winning: the environment
+variable SLOOP_<NAME>, the entry's own `path`, and <checkouts>/<checkout>, which defaults to
+the dependency's name.
 
 A dependency can be renamed freely. A record made under its old name is read under the one it
 has now, because a version identifies a checkout without the help of a name.
 
-A version is compared as a string. For a repository it is the checkout's commit, and for a
+A version is compared as a string. For a dependency it is its checkout's commit, and for a
 tool it is the one line its version command prints, which can be a number, a commit, anything.
+A version that names a commit or a tag of the checkout links to that commit; one that names
+neither links to the checkout itself.
 
 A tool whose version is the commit of its source can be provisioned:
 
       simfbdr:
-        url: https://github.com/you/simfbdr
-        version: simfbdr --version
+        tools: {simfbdr: simfbdr --version}
         provision: worktree                       # check out the commit a step states
         provides: {PATH: bin, PYTHONPATH: src}    # and put these of its directories first
 
 A step that states simfbdr@1616e09 is then run against a git worktree of that commit, made
-from the tool's own checkout (found as a repository's is) and kept under <checkouts>/.sloop.
-So two steps can state two commits of one tool, and neither moves the checkout you work in.
-The version command is run with the same directories first, and still has to print the
-commit the step states.
+from the dependency's own checkout and kept under <checkouts>/.sloop. So two steps can state
+two commits of one tool, and neither moves the checkout you work in. The version command is
+run with the same directories first, and still has to print the commit the step states.
 """
 import os
 import re
 import subprocess
 from pathlib import Path
 
-FIELDS = {"url", "version", "path", "provision", "provides"}
+FIELDS = {"url", "path", "checkout", "tools", "provision", "provides"}
 
 ROOT = CHECKOUTS = None
 DEPS = {}
@@ -73,26 +81,50 @@ def read(raw, where):
         if unknown:
             raise SystemExit(f"{where}: dependency {name} has no field {sorted(unknown)[0]!r}; "
                              f"the fields are {', '.join(sorted(FIELDS))}")
-        kind = "tool" if d.get("version") else "repository" if d.get("url") else "directory"
+        tools = d.get("tools") or {}
+        if not isinstance(tools, dict):
+            raise SystemExit(f"{where}: {name}: tools is a mapping of a tool's name to the "
+                             f"command that prints its version")
+        # what the dependency's checkout is here. A plain directory is one that exists and is
+        # not a repository; anything absent is taken to be a checkout, so a page still reads
+        # on a machine that has not got it.
+        at, _ = checkout(str(name), {"path": d.get("path"),
+                                     "checkout": str(d.get("checkout") or name)})
+        kind = ("tool" if tools else
+                "directory" if at.is_dir() and git(at, "rev-parse", "--git-dir") is None
+                else "repository")
         provision, provides = d.get("provision"), d.get("provides") or {}
         if provision not in (None, "worktree"):
             raise SystemExit(f"{where}: {name} has provision: {provision}; it can be worktree")
-        if provision and kind != "tool":
-            raise SystemExit(f"{where}: {name} is provisioned, so it needs a version command "
-                             f"that prints the commit of its source")
+        if provision and not tools:
+            raise SystemExit(f"{where}: {name} is provisioned, so it needs a tool whose version "
+                             f"command prints the commit of its source")
         if provides and not provision:
             raise SystemExit(f"{where}: {name} has provides, which says what a provisioned "
                              f"checkout puts first: add provision: worktree")
         if not isinstance(provides, dict):
             raise SystemExit(f"{where}: {name}: provides is a mapping of an environment "
                              f"variable to a directory of the checkout")
-        if kind == "tool" and d.get("path") and not provision:
-            raise SystemExit(f"{where}: {name} is a tool, which has no path: it is whatever "
-                             f"its version command finds")
-        out[str(name)] = {"url": (d.get("url") or "").strip(), "version": d.get("version"),
+        out[str(name)] = {"url": (d.get("url") or "").strip(),
                           "path": d.get("path"), "kind": kind, "provision": provision,
+                          "checkout": str(d.get("checkout") or name),
+                          "tools": {str(k): v for k, v in tools.items()},
                           "provides": {str(k): str(v) for k, v in provides.items()}}
+    for name, d in out.items():
+        for tool in d["tools"]:
+            other = [n for n, e in out.items() if n != name and tool in e["tools"]]
+            if other:
+                raise SystemExit(f"{where}: {name} and {other[0]} both have a tool called "
+                                 f"{tool}; a tool is named once")
     return out
+
+
+def tool_of(name, deps=None):
+    """(the dependency it belongs to, the command that prints its version), or None."""
+    for dn, d in (DEPS if deps is None else deps).items():
+        if name in d["tools"]:
+            return dn, d["tools"][name]
+    return None
 
 
 def merged(page_deps, page):
@@ -156,7 +188,8 @@ def fetch_commit(base, name, dep, sha):
         # expand from the abbreviation a page states and a url cannot
         full = git(Path(resolved(where)), "rev-parse", "--verify", "--quiet", sha + "^{commit}")
         for ref in filter(None, (full, spec)):
-            r = subprocess.run(["git", "-C", str(base), "fetch", "--no-tags", "--quiet",
+            tags = "--tags" if ref is spec else "--no-tags"
+            r = subprocess.run(["git", "-C", str(base), "fetch", tags, "--quiet",
                                 str(where), ref], capture_output=True, text=True)
             if r.returncode == 0 and git(base, "rev-parse", "--verify", "--quiet", sha + "^{commit}"):
                 return at
@@ -182,8 +215,6 @@ def env_name(name):
 
 def locate(name, dep):
     """(path, which rule supplied it) for a repository or a data directory."""
-    if dep["kind"] == "tool":
-        return None, "a tool has no path"
     return checkout(name, dep)
 
 
@@ -195,7 +226,7 @@ def checkout(name, dep):
     if dep["path"]:
         p = Path(str(dep["path"])).expanduser()
         return (p if p.is_absolute() else ROOT / p).resolve(), "from path in notebook.yml"
-    return (CHECKOUTS / name).resolve(), "the default location"
+    return (CHECKOUTS / dep["checkout"]).resolve(), "the default location"
 
 
 def git(path, *args):
@@ -253,8 +284,9 @@ def version(name, dep, at=None):
     key = (name, str(at)) if at else name
     if key in _versions:
         return _versions[key]
-    if dep["kind"] == "tool":
-        r = subprocess.run(dep["version"], shell=True, capture_output=True, text=True, cwd=ROOT,
+    cmd = dep["tools"].get(name)
+    if cmd:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=ROOT,
                            env=provided(name, dep, at) if at else None)
         lines = r.stdout.strip().splitlines()
         if r.returncode != 0 or not lines:
@@ -263,19 +295,17 @@ def version(name, dep, at=None):
             out = (None, f"its version command printed {len(lines)} lines; it must print one")
         else:
             out = (lines[0].strip(), None)
-    elif dep["kind"] == "repository":
+    else:
         where, _ = locate(name, dep)
         if not where.is_dir():
             out = (None, f"not on this machine: no {where}")
         else:
             head = git(where, "rev-parse", "HEAD")
             if head is None:
-                out = (None, f"{where} is not a git checkout")
+                out = (None, f"{where} is not a git checkout, so it has no version")
             else:
                 dirty = bool(git(where, "status", "--porcelain", "--untracked-files=no"))
                 out = (head + ("+uncommitted" if dirty else ""), None)
-    else:
-        out = (None, "a data directory has no version")
     _versions[key] = out
     return out
 
@@ -285,11 +315,11 @@ def uncommitted(observed):
     return observed.endswith("+uncommitted") or observed.endswith("-dirty")
 
 
-def matches(dep, pinned, observed):
-    """Whether what is installed is what the page states. A repository's pin may be a short
-    hash; anything else is compared whole."""
+def matches(name, dep, pinned, observed):
+    """Whether what is installed is what the page states. A commit pin may be a short hash;
+    anything else is compared whole."""
     clean = re.sub(r"(\+uncommitted|-dirty)$", "", observed)
-    if dep["kind"] == "repository":
+    if name not in dep["tools"]:
         return clean.startswith(pinned) and len(pinned) >= 7
     # a tool that reports the commit it was built from may abbreviate it differently from the
     # page, so two hex strings match when one begins the other
@@ -298,20 +328,47 @@ def matches(dep, pinned, observed):
     return clean == pinned
 
 
-def shown(dep, observed, pinned):
-    """A repository's version at the length the page wrote it, so the two read alike."""
-    if dep["kind"] != "repository":
+def implicit(name):
+    """A dependency nothing declares: a checkout of that name and no tools."""
+    return {"url": "", "path": None, "kind": "repository", "provision": None,
+            "checkout": name, "tools": {}, "provides": {}}
+
+
+def shown(name, dep, observed, pinned):
+    """A commit at the length the page wrote it, so the two read alike."""
+    if name in dep["tools"]:
         return observed
     clean = re.sub(r"\+uncommitted$", "", observed)
     return clean[:max(len(pinned), 7)] + observed[len(clean):]
 
 
+_urls = {}
+
+
+def origin_url(name, dep):
+    """Where a checkout came from, read off its own remote and written as a web address, so
+    nothing has to be declared for a dependency that is checked out here."""
+    if name in _urls:
+        return _urls[name]
+    at, _ = locate(name, dep)
+    raw = git(at, "remote", "get-url", "origin") if at and at.is_dir() else None
+    out = ""
+    if raw:
+        ssh = re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?", raw)
+        out = f"https://{ssh.group(1)}/{ssh.group(2)}" if ssh else re.sub(r"\.git/?$", "", raw)
+    _urls[name] = out
+    return out
+
+
 def url_of(name, dep):
-    """A dependency's url. One written as owner/repo is expanded through the first remote
-    whose location is a web address, so the host is written once for the whole notebook."""
+    """A dependency's url: the one it declares, else the one its checkout came from, else a
+    name expanded through the first remote whose location is a web address."""
     raw = (dep.get("url") or "").strip()
-    if not raw or "://" in raw:
+    if raw and "://" in raw:
         return raw
+    got = origin_url(name, dep)
+    if got:
+        return got
     for _, where in remotes_for(name, dep):
         if where.startswith(("http://", "https://")):
             return where
@@ -319,21 +376,26 @@ def url_of(name, dep):
 
 
 def link(name, dep, ver):
-    """The url behind a version shown on a page, or '' for plain text."""
+    """The url behind a version shown on a page, or '' for plain text.
+
+    A version that names a commit or a tag of the dependency's checkout links to that commit.
+    One that names neither links to the checkout itself, and a dependency with no url at all
+    is plain text.
+    """
     raw = (dep.get("url") or "").strip()
     if "{version}" in raw:
         return raw.replace("{version}", ver)
     url = url_of(name, dep)
-    if not url:
-        return ""
+    if not url or "github.com" not in url:
+        return url
     clean = re.sub(r"(\+uncommitted|-dirty)$", "", ver)
-    # a version can carry the commit rather than be it, as "1.1.0-ac87d11a0de5" does
-    at = clean if re.fullmatch(r"[0-9a-f]{6,40}", clean) else None
-    if at is None:
-        tail = re.search(r"[-_]([0-9a-f]{7,40})$", clean)
-        at = tail.group(1) if tail else None
-    if "github.com" in url and at:
-        return f"{url.rstrip('/')}/commit/{at}"
+    at, _ = locate(name, dep)
+    full = (git(at, "rev-parse", "--verify", "--quiet", clean + "^{commit}")
+            if at and at.is_dir() else None)
+    if full:
+        return f"{url.rstrip('/')}/commit/{full}"
+    if re.fullmatch(r"[0-9a-f]{6,40}", clean):
+        return f"{url.rstrip('/')}/commit/{clean}"
     return url
 
 

@@ -210,8 +210,8 @@ def provenance(page_dir):
 
     def use(u):
         name, _, ver = u.partition("@")
-        dep = plan.deps.get(name)
-        href = D.link(name, dep, ver) if dep else ""
+        dn, dep = plan.owner(name)
+        href = D.link(dn, dep, ver) if dep else ""
         label = html.escape(u)
         return (f'<a class="ref" href="{html.escape(href)}" rel="noreferrer">{label}</a>' if href
                 else f'<span class="ref">{label}</span>')
@@ -295,17 +295,15 @@ def provenance(page_dir):
 def read_sources():
     """The reading list, as [name, kind, url, note] rows. It lives in notebook.yml.
 
-    A dependency a page ran is already listed, so an entry here is an extra, or a better name
-    and note for one of them. Such an entry says `dep` rather than repeating its url.
+    A dependency a page ran is already listed under its own name, so an entry here is an
+    extra: something no page cites.
     """
     rows = []
     for r in SOURCES:
         if not isinstance(r, dict) or not r.get("name"):
-            raise SystemExit("notebook.yml: each of sources needs a name, and may have "
-                             "kind, url, note, and dep to name the dependency it describes")
-        url, ref = str(r.get("url") or ""), str(r.get("dep") or "")
-        if not url and ref in D.DEPS:
-            url = D.url_of(ref, D.DEPS[ref])
+            raise SystemExit("notebook.yml: each of sources needs a name, "
+                             "and may have kind, url, note")
+        url = str(r.get("url") or "")
         rows.append([str(r["name"]), str(r.get("kind") or ""), url, str(r.get("note") or "")])
     return rows
 
@@ -719,9 +717,10 @@ def build(site=None):
         plan = L.Plan(Path(e["path"]).parent, strict=False)
         for step in plan.steps.values():
             for name, _ in step["uses"]:
-                u = D.url_of(name, plan.deps[name]).rstrip("/")
+                dn, dep = plan.owner(name)
+                u = D.url_of(dn, dep).rstrip("/") if dep else ""
                 if u and "{version}" not in u and u not in ref_only:
-                    cited.setdefault(u, named.get(u, name))
+                    cited.setdefault(u, named.get(u, dn))
     listed_srcs = [(name, url) for url, name in cited.items()]
     for r in sidebar_sources(rows):                       # extras no page ran
         if r[2].rstrip("/") not in cited:

@@ -176,8 +176,8 @@ class Plan:
         stated_here = meta.get("uses") or []
         self.rests_on = [stated_here] if isinstance(stated_here, str) else [str(u) for u in stated_here]
         for u in self.rests_on:
-            if u.partition("@")[0] not in self.deps or "@" not in u:
-                raise SystemExit(f"{self.name}: uses {u}; write a dependency from notebook.yml "
+            if self.owner(u.partition("@")[0])[1] is None or "@" not in u:
+                raise SystemExit(f"{self.name}: uses {u}; write a dependency or a tool from notebook.yml "
                                  f"as name@version")
         for name, raw in (meta.get("steps") or {}).items():
             self.steps[str(name)] = self._step(str(name), raw or {}, strict)
@@ -200,11 +200,17 @@ class Plan:
         pins = []
         for u in uses:
             dep_name, at, ver = str(u).partition("@")
-            dep = self.deps.get(dep_name)
-            if dep is None or dep["kind"] == "directory":
+            _, dep = self.owner(dep_name)
+            if dep is None:
+                # nothing declares it, so it is a checkout of that name and needs no entry
+                guess = D.implicit(dep_name)
+                if not strict or D.locate(dep_name, guess)[0].is_dir():
+                    self.deps[dep_name] = dep = guess
+            if dep is None or (dep["kind"] == "directory" and dep_name not in dep["tools"]):
                 raise SystemExit(f"{self.name}: step {name} uses {dep_name}, which "
                                  + ("is a data directory and has no version" if dep
-                                    else "is not a dependency in notebook.yml"))
+                                    else "is not a dependency in notebook.yml, and no "
+                                         "checkout of that name is here"))
             if not at or not ver:
                 if not strict:
                     ver = ""
@@ -212,7 +218,7 @@ class Plan:
                     found, problem = D.version(dep_name, dep)
                     raise SystemExit(
                         f"{self.name}: step {name} uses {dep_name} without saying which version. "
-                        + (f"Here it is at: {dep_name}@{D.shown(dep, found, found[:7])}" if found
+                        + (f"Here it is at: {dep_name}@{D.shown(dep_name, dep, found, found[:7])}" if found
                            else f"It could not be found here ({problem})."))
             pins.append((dep_name, ver))
         cmd = str(raw["cmd"])
@@ -241,6 +247,13 @@ class Plan:
                              f"has no path. Name a repository or a data directory.")
         root, _ = D.locate(first, dep)
         return (root / rest if rest else root), first
+
+    def owner(self, name):
+        """(the dependency a used name belongs to, its entry). A tool belongs to its own."""
+        if name in self.deps:
+            return name, self.deps[name]
+        got = D.tool_of(name, self.deps)
+        return (got[0], self.deps[got[0]]) if got else (None, None)
 
     def here(self, path):
         """Whether the dependency a path sits in is on this machine at all."""
@@ -485,11 +498,12 @@ def cmd_hash(cmd):
 def environment(plan, step=None):
     """What a command receives. A step also gets each provisioned tool it states, first."""
     env = dict(os.environ, PAGE=str(plan.dir), **D.environment(plan.deps))
-    for dep_name, pinned in (step["uses"] if step else []):
-        dep = plan.deps[dep_name]
-        at = D.provisioned(dep_name, dep, pinned)[0] if dep["provision"] and pinned else None
+    for used, pinned in (step["uses"] if step else []):
+        dn, dep = plan.owner(used)
+        at = (D.provisioned(dn, dep, pinned)[0]
+              if dep and dep["provision"] and pinned else None)
         if at:
-            env = D.provided(dep_name, dep, at, env)
+            env = D.provided(dn, dep, at, env)
     return env
 
 
@@ -497,10 +511,10 @@ def check_uses(plan, step):
     """(refusals, the versions as observed). Called at the moment a step is about to run."""
     bad, ran = [], []
     for dep_name, pinned in step["uses"]:
-        dep = plan.deps[dep_name]
+        dn, dep = plan.owner(dep_name)
         at = None
         if dep["provision"]:
-            at, problem = D.provisioned(dep_name, dep, pinned, create=True)
+            at, problem = D.provisioned(dn, dep, pinned, create=True)
             if at is None:
                 bad.append(problem)
                 continue
@@ -508,23 +522,23 @@ def check_uses(plan, step):
         if found is None:
             bad.append(f"{dep_name}: {problem}")
             continue
-        if at and not D.matches(dep, pinned, found):
+        if at and not D.matches(dep_name, dep, pinned, found):
             bad.append(f"{dep_name}@{pinned} is checked out at {at}, and its version command "
                        f"still prints {found}: what {dep_name} provides in notebook.yml does "
                        f"not put that checkout first")
             continue
-        if not D.matches(dep, pinned, found):
+        if not D.matches(dep_name, dep, pinned, found):
             fix = ""
             if dep["kind"] == "repository":
                 fix = f"\n      git -C {D.locate(dep_name, dep)[0]} checkout {pinned}"
-            bad.append(f"{dep_name} is at {D.shown(dep, found, pinned)}, and the page states "
+            bad.append(f"{dep_name} is at {D.shown(dep_name, dep, found, pinned)}, and the page states "
                        f"{dep_name}@{pinned}{fix}")
             continue
         if D.uncommitted(found) and step["frozen"]:
             bad.append(f"{dep_name} has uncommitted changes. A frozen step's result could "
                        f"never be traced to its code: commit first.")
             continue
-        ran.append(f"{dep_name}@{D.shown(dep, found, pinned)}")
+        ran.append(f"{dep_name}@{D.shown(dep_name, dep, found, pinned)}")
     return bad, ran
 
 
@@ -966,12 +980,13 @@ def unlisted_tools(plan, step):
     text = re.sub(r"#[^\n]*", "", text)
     listed = {n for n, _ in step["uses"]}
     out = []
-    for name, dep in plan.deps.items():
-        if dep["kind"] != "tool" or name in listed:
-            continue
-        word = name if len(name) > 1 else name + "script"
-        if re.search(rf"(?<![\w.-]){re.escape(word)}(?![\w-])", text):
-            out.append(name)
+    for dep in plan.deps.values():
+        for tool in dep["tools"]:
+            if tool in listed or tool in out:
+                continue
+            word = tool if len(tool) > 1 else tool + "script"
+            if re.search(rf"(?<![\w.-]){re.escape(word)}(?![\w-])", text):
+                out.append(tool)
     return out
 
 
@@ -987,8 +1002,11 @@ def status(page_dir, fresh=False):
                   | {n for s in plan.steps.values() for n, _ in s["uses"]})
     print(plan.name)
     for name in used:
-        dep = plan.deps[name]
-        if dep["kind"] == "tool":
+        _, dep = plan.owner(name)
+        if dep is None:
+            print(f"  {name:<16} unknown     nothing declares it and no checkout is here")
+            continue
+        if name in dep["tools"]:
             found, problem = D.version(name, dep)
             print(f"  {name:<16} tool        {found or problem}")
         else:
@@ -1005,22 +1023,23 @@ def status(page_dir, fresh=False):
         for w in why:
             print(f"      {w}")
         for dep_name, pinned in step["uses"]:
-            if pinned and plan.deps[dep_name]["provision"]:
-                at, problem = D.provisioned(dep_name, plan.deps[dep_name], pinned)
+            dn, dep = plan.owner(dep_name)
+            if pinned and dep["provision"]:
+                at, problem = D.provisioned(dn, dep, pinned)
                 if problem:
                     print(f"      {problem}: this step would refuse to run")
                 elif not (step["frozen"] and state == "current"):
                     print(f"      {dep_name}@{pinned} " + (f"is checked out at {at}" if at else
                           "is checked out when this step runs"))
                 continue
-            found, problem = D.version(dep_name, plan.deps[dep_name])
+            found, problem = D.version(dep_name, dep)
             if not pinned:
                 print(f"      uses {dep_name} without a version; here it is "
-                      f"{dep_name}@{D.shown(plan.deps[dep_name], found, found[:7]) if found else '?'}")
+                      f"{dep_name}@{D.shown(dep_name, dep, found, found[:7]) if found else '?'}")
                 ok = False
-            elif found and not D.matches(plan.deps[dep_name], pinned, found) \
+            elif found and not D.matches(dep_name, dep, pinned, found) \
                     and not (step["frozen"] and state == "current"):
-                print(f"      {dep_name} is at {D.shown(plan.deps[dep_name], found, pinned)} here, "
+                print(f"      {dep_name} is at {D.shown(dep_name, dep, found, pinned)} here, "
                       f"and the page states {pinned}: this step would refuse to run")
         for t in unlisted_tools(plan, step):
             print(f"      its script mentions {t}, which it does not list under uses")
@@ -1047,8 +1066,9 @@ def prune():
         plan = Plan(d, strict=False)
         for step in plan.steps.values():
             for dep_name, pinned in step["uses"]:
-                dep = plan.deps[dep_name]
-                at = D.provisioned(dep_name, dep, pinned)[0] if dep["provision"] and pinned else None
+                dn, dep = plan.owner(dep_name)
+                at = (D.provisioned(dn, dep, pinned)[0]
+                      if dep and dep["provision"] and pinned else None)
                 if at:
                     kept.add(at)
     for at in sorted(root.glob("*/*")) if root.is_dir() else []:

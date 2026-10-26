@@ -50,8 +50,8 @@ def new(pages, name, words=(), dependencies=None):
     d.mkdir()
     path = d / "page.md"
     # every tool the notebook knows, so the one a script runs is a deletion away from listed
-    tools = [f"{n}@VERSION" for n, d in (dependencies or {}).items() if (d or {}).get("version")
-             and not isinstance(d, str)]
+    tools = [f"{t}@VERSION" for d in (dependencies or {}).values()
+             if isinstance(d, dict) for t in (d.get("tools") or {})]
     path.write_text(TEMPLATE.format(title=title, date=datetime.date.today().isoformat(),
                                     name=name, uses=", ".join(tools) or "tool@VERSION"))
     # a page carries its own environment so it can be read anywhere it is cloned
