@@ -69,6 +69,8 @@ def init(root, conf):
     BRANCH = conf["branch"] or D.git(ROOT, "rev-parse", "--abbrev-ref", "HEAD") or "main"
     BIB = R.Bibliography(conf["bibliography"])
     PALETTE = {R.colour(str(k)): str(v).lstrip("-") for k, v in (conf.get("figure_colors") or {}).items()}
+    global THEME
+    THEME = theme(conf.get("palette") or {})
     D.init(root, conf)
     L.init(root, conf)
 
@@ -552,7 +554,7 @@ def export(slug, out=None):
     # the updated stamp and the page count describe the notebook, not this page
     text = re.sub(r'<div class="provenance">.*?</div>', "", text, count=1, flags=re.S)
     text = re.sub(r'<link rel="stylesheet" href="[^"]*assets/style.css">',
-                  lambda m: "<style>" + STYLE + EXPORT_STYLE + "</style>", text, count=1)
+                  lambda m: "<style>" + STYLE + THEME + EXPORT_STYLE + "</style>", text, count=1)
     refs = BIB.load()
 
     def inert(m):
@@ -661,7 +663,7 @@ def emit_site(pages, site):
     site.mkdir(parents=True, exist_ok=True)
     (site / ".nojekyll").write_text("")          # Jekyll eats anything starting with _ or .
     (site / "assets").mkdir(exist_ok=True)
-    (site / "assets" / "style.css").write_text(STYLE)
+    (site / "assets" / "style.css").write_text(STYLE + THEME)
     (site / "assets" / "app.js").write_text(APP)
     written = set()
     for rel, text in pages:
@@ -817,6 +819,34 @@ def build(site=None):
     print(f"{len(entries)} pages, {len(counts)} tags, "
           f"{len(sidebar_sources(rows))} sources listed of {len(rows)}")
     print(f"  newest: {recent[0]['slug']} ({recent[0]['date']}) {recent[0]['title'][:52]}")
+
+
+THEME = ""
+
+
+def theme(palette):
+    """The notebook's own palette, as rules that follow STYLE and so win over it. A light:
+    map applies wherever the light scheme does and a dark: map wherever the dark one does,
+    each by the same selectors STYLE uses, so the toggle and the system setting both hold."""
+    unknown = set(palette) - {"light", "dark"}
+    if unknown:
+        raise SystemExit(f"palette: only light: and dark: are read, not {', '.join(sorted(unknown))}")
+
+    def decls(scheme):
+        rows = palette.get(scheme) or {}
+        for k, v in rows.items():
+            if not re.fullmatch(r"-{0,2}[a-z][a-z0-9-]*", str(k)) or not re.fullmatch(r"#[0-9A-Fa-f]{3,8}", str(v)):
+                raise SystemExit(f"palette.{scheme}: {k}: {v} is not a variable name and a hex colour")
+        return " ".join(f"--{str(k).lstrip('-')}:{v};" for k, v in rows.items())
+
+    light, dark = decls("light"), decls("dark")
+    out = []
+    if light:
+        out += [f":root {{ {light} }}", f':root[data-theme="light"] {{ {light} }}']
+    if dark:
+        out += [f'@media (prefers-color-scheme: dark) {{ :root:not([data-theme="light"]) {{ {dark} }} }}',
+                f':root[data-theme="dark"] {{ {dark} }}']
+    return ("\n  /* this notebook's palette, from notebook.yml */\n  " + "\n  ".join(out) + "\n") if out else ""
 
 
 HEAD = '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />\n'

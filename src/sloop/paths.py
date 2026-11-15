@@ -28,6 +28,9 @@ DEFAULTS = {
     "bibliography": "references.bib",
     # literal colours in a figure and the stylesheet variable each stands for
     "figure_colors": {},
+    # stylesheet variables this notebook sets for itself, as light: and dark: maps of name to
+    # colour, over the default Wilf palette
+    "palette": {},
     "serve": {"port": 8099, "edit": True, "panes": []},
     # a page shared at a revocable link: the share server's port. The public url is read
     # off the funnel that proxies that port; stating one here overrides that.

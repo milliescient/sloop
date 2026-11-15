@@ -76,6 +76,9 @@ run from anywhere at or below it, so the commands work from inside a page.
     figure_colors:          # literal colours in a figure, and the stylesheet variable each stands for
       "#000000": ink
       "#1b9e77": fig1
+    palette:                # stylesheet variables this notebook sets over the default palette
+      light: {ground: "#E8EBF1", ink: "#121A30", accent: "#2F4A9C"}
+      dark:  {ground: "#14213F", ink: "#F0F2F7", accent: "#9FB2EE"}
 
 Only `title` is needed.
 
