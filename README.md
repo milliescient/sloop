@@ -1,16 +1,12 @@
 # sloop
 
-A lab notebook as a static site: dated entries of prose whose numbers come
-from the scripts that produced them, each entry recording what it ran, at which version, and
-the hash of everything it read and wrote.
+sloop makes a lab notebook as a static site, with dated entries whose numbers come from the scripts that produced them. Each entry records what it ran, at which version, and the hash of everything it read and wrote.
 
-A `{{key}}` anywhere in a page is replaced by a value one of the page's steps wrote, so a
-number in the prose cannot drift from the computation behind it. Rerun the step and the prose
-follows. A page declares its steps, and `page.lock` beside it records each one. A step that
-is not frozen simply reruns when anything it reads changes, and says what changed. A frozen
-step marks a result as decided, so what it rests on is refused when it moves, until someone
-says the change was meant. A page that reads unfinished work says so on its face, and a page
-reaches anyone else only when it is shared.
+A `{{key}}` anywhere in a page is replaced by a value written by one of the page's steps. Rerun the step and the prose follows the computation.
+
+A page declares its steps, and `page.lock` beside it records each one. An ordinary step reruns when anything it reads changes and reports what changed. A frozen step marks a result as decided. Changes to what it rests on are refused until you record that the change was meant.
+
+A page that reads unfinished work carries a banner. A page reaches anyone else only when you share it.
 
 > *slop* is an anagram of *PLoS*, the Public Library of Slop. We generate slop data, run
 > slop analyses and present slop results, and then draw real conclusions, which is only
@@ -20,17 +16,25 @@ reaches anyone else only when it is shared.
 
 ## Install
 
+Install from the public repository:
+
+    pip install git+https://github.com/milliescient/sloop
+
+If you are working on a checkout, install from that checkout:
+
     pip install -e /path/to/sloop
 
-That puts `sloop` on the path, with `notebook` as an alias.
+Both put `sloop` on the path, with `notebook` as an alias.
 
 ## Use
 
     sloop init my-notebook              # notebook.yml and pages/
     sloop new starving-column "A title" # a page, dated
     sloop build                         # render it into site/, a page per entry
+    sloop build --static                # for a static host: no terminal, no library import
     sloop export PAGE [-o FILE]         # one page as one file, to send to someone
     sloop share PAGE                    # the page at a link that can be taken back
+    sloop share --serve                 # serve shared pages at /share/<token>/
     sloop unshare TOKEN|PAGE            # take it back
     sloop serve                         # build, serve on localhost, rebuild as pages change
     sloop status [PAGE]                 # where each step stands; runs checks and no steps
@@ -40,9 +44,9 @@ That puts `sloop` on the path, with `notebook` as an alias.
     sloop accept PAGE WHAT -m "why"     # say a change under a frozen step was meant
     sloop cite DOI                      # add a reference to the notebook's .bib file
     sloop pack sloop.pyz                # pack the builder into one file for deployment
+    sloop prune                         # remove provisioned worktrees no step states any more
 
-The notebook is the directory holding `notebook.yml`: pass `--dir`, set `$NOTEBOOK_DIR`, or
-run from anywhere at or below it, so the commands work from inside a page.
+The notebook is the directory holding `notebook.yml`. Pass `--dir`, set `$NOTEBOOK_DIR`, or run from anywhere at or below that directory. The commands also work from inside a page.
 
 ## notebook.yml
 
@@ -84,7 +88,7 @@ Only `title` is needed.
 
 ### Dependencies
 
-The kind of a dependency is read off its fields, because the kinds are not exclusive:
+A dependency's fields determine its kind. The kinds are not exclusive.
 
 | An entry with | is | and its version is |
 |---|---|---|
@@ -92,18 +96,13 @@ The kind of a dependency is read off its fields, because the kinds are not exclu
 | `url` and no `version` | a repository checked out on disk | the checkout's commit |
 | neither | a data directory | none |
 
-`url` is where a thing comes from, the same on every machine, and it is the link behind a
-version shown on a page: a commit on a git host links to that commit, a url containing
-`{version}` is a pattern, and anything else links as it stands.
+`url` says where a dependency comes from and stays the same on every machine. It also supplies the link behind a version shown on a page. A commit on a git host links to that commit. A URL containing `{version}` is a pattern. Any other URL links as it stands.
 
-`path` is where a repository or a data directory sits on this machine. It is looked for in
-three places, first match winning: the environment variable `SLOOP_<NAME>`, the entry's own
-`path`, and `<checkouts>/<name>`. `$CHECKOUTS` moves the default for one machine. A step's
-command receives each location as `$<NAME>`, without the prefix. A tool has no path: it is
-whatever its version command finds, and installing the right one is up to you.
+`path` says where a repository or data directory sits on this machine. sloop uses the first match among the environment variable `SLOOP_<NAME>`, the entry's own `path`, and `<checkouts>/<name>`. `$CHECKOUTS` changes the default for one machine. Each step's command receives the location as `$<NAME>`, without the prefix.
 
-A tool whose version is the commit of its source can be provisioned, so that a step runs
-against the commit it states and not against whatever is installed:
+A tool has no path. It is whatever its version command finds. You are responsible for installing the right version.
+
+A tool whose version is its source commit can be provisioned. This runs a step against the commit it states rather than whatever is installed:
 
 ```yaml
 dependencies:
@@ -114,41 +113,21 @@ dependencies:
     provides: {PATH: bin, PYTHONPATH: src}
 ```
 
-A step that states `simfbdr@1616e09` is then run against a git worktree of that commit, which
-`sloop make` creates from the tool's own checkout the first time it is needed and keeps under
-`<checkouts>/.sloop/simfbdr/`. That checkout is found as a repository's is. `provides` names
-the directories of the worktree to put first on each variable, and one a commit does not have
-is left out. The version command is run the same way and still has to print the stated commit,
-so a `provides` that does not reach the worktree is refused. Two steps can state
-two commits of one tool, and the checkout you work in is never moved. The command also
-receives the worktree as `$<NAME>`. `sloop prune` removes the worktrees no step states any
-more. A commit the checkout does not have is refused: fetch it. A version that is not a
-commit, or one built with uncommitted changes, cannot be provisioned.
+A step that states `simfbdr@1616e09` runs against a git worktree of that commit. `sloop make` creates the worktree from the tool's own checkout the first time it is needed and keeps it under `<checkouts>/.sloop/simfbdr/`. The tool's checkout is found in the same way as a repository dependency.
 
-A dependency that has been renamed says what it was, `formerly: old-name` or a list. A lock
-or a manifest written under the old name is then read under the new one, so the rename makes
-nothing stale.
+`provides` names the worktree directories to put first on each variable. A directory that the commit does not have is left out. The version command runs in the same environment and must still print the stated commit. A `provides` setting that does not reach the worktree is refused.
 
-A dependency that is not on this machine is reported as not checkable here, not as missing.
-A build never needs any of them.
+Two steps can state two commits of one tool. The checkout you work in is never moved. The command also receives the worktree as `$<NAME>`. `sloop prune` removes worktrees that no step states any more.
 
-## Deploying
+A commit absent from the checkout is refused. Fetch it before running the step. A version that is not a commit, or one built with uncommitted changes, cannot be provisioned.
 
-`sloop pack` writes a zipapp carrying everything it imports, under 1 MB, which runs
-on any python3 with nothing installed and nothing to resolve:
+For a renamed dependency, set `formerly: old-name` or give a list of former names. A lock or manifest written under an old name is then read under the new one. The rename makes nothing stale.
 
-    sloop pack sloop.pyz
-    python3 sloop.pyz build --out _site
-
-Commit that file beside the pages and a GitHub Actions job is one line with no setup step,
-since every runner image already ships python3. The same file works on Netlify, Cloudflare
-Pages, a container or a cluster node. The compiled YAML accelerator is dropped when packing,
-so the archive is platform independent and the pure-Python parser is used instead.
+A dependency absent from this machine is reported as not checkable here, not as missing. A build needs none of the dependencies.
 
 ## A page
 
-A page is a directory under `pages/` holding a `page.md` whose header is YAML terminated by
-`---`:
+A page is a directory under `pages/` containing a `page.md`. Its YAML header ends with `---`:
 
     title: The col=3 move was starving the column that mixes worst
     date: 2026-10-10
@@ -171,7 +150,7 @@ A page is a directory under `pages/` holding a `page.md` whose header is YAML te
     ---
     Body, in Markdown. Raw HTML passes through.
 
-Steps are named as the page likes, and there can be any number.
+You can name steps as you like and include any number.
 
 | Field | Meaning |
 |---|---|
@@ -181,32 +160,21 @@ Steps are named as the page likes, and there can be any number.
 | `inputs` | Paths the step reads. |
 | `outputs` | Paths the step writes. |
 
-A path whose first part names a dependency is inside that checkout or data directory, and
-anything else is relative to the page. Edges come from paths: a step that reads what another
-writes runs after it. A step's own script, every word of `cmd` that names a file in the page
-directory, is an input without being listed. A cycle, two steps writing the same path and a
-`uses` that names nothing are refused before anything runs.
+A path whose first part names a dependency is inside that checkout or data directory. Other paths are relative to the page. Paths determine the order of steps. A step that reads what another writes runs after it.
 
-A page with no script behind it can still say what it rests on, with `uses:` at the top of
-its header. That is shown and never enforced.
+A step's own script is an input without being listed. This includes every word of `cmd` that names a file in the page directory. A cycle, two steps writing the same path, or a `uses` entry naming an undeclared dependency is refused before anything runs.
+
+A page with no script can still state what it rests on with `uses:` at the top of its header. This is shown but never enforced.
 
 ### The record
 
-`sloop make` writes `page.lock` beside the page: for each step, the versions it ran and the
-hash of every path it read and wrote. It is committed.
+`sloop make` writes `page.lock` beside the page. For each step, it records the versions that ran and the hash of every path read and written. Commit this file.
 
-A tool that makes data may pick its own tools, as simfbdr picks the build of rb that analyzes
-a run. Where a path a step reads or writes has a `manifest.yml` at or above it with a `uses`
-list of `name@version`, the lock copies the list under `made_with`, and the provenance block
-shows it under the step's `uses`, each name linked through its entry in `dependencies`. It says what
-ran there and is never compared with what is installed here.
+A tool that makes data may choose its own tools, as simfbdr chooses the build of rb that analyzes a run. A path that a step reads or writes can have a `manifest.yml` at or above it with a `uses` list of `name@version`. The lock copies that list under `made_with`. The provenance block shows it under the step's `uses`, with each name linked through its entry in `dependencies`. This records what ran there. It is never compared with what is installed here.
 
-On the page the block opens as a footer under the entry, one step after another, each with
-what it `uses`, its `input` and its `output`. A version links to its commit and a file in the
-notebook links to itself. A step that states no `uses` shows the versions it rests on through
-its inputs: those of the step that wrote them, and those a manifest names.
+The provenance block opens as a footer under the entry. It shows each step with its `uses`, `input` and `output`. A version links to its commit, and a file in the notebook links to itself. A step with no `uses` shows the versions it rests on through its inputs. These come from the step that wrote the inputs and from any manifest.
 
-A step is then one of
+A step has one of these states:
 
 | State | Meaning |
 |---|---|
@@ -216,40 +184,25 @@ A step is then one of
 | unrecorded | its outputs are there, and nothing says how they got there |
 | current | none of those |
 
-A stale step that is not frozen is rerun, whatever changed, and prints which of its inputs had
-changed. Only a frozen step marks a result as decided, so only what a frozen step rests on is
-refused when it moves: an input a frozen step read, or the output of a frozen step that another
-step reads. `sloop accept PAGE WHAT -m "why"` writes down that the change was meant, in the
-lock, with the reason. A version a step states is a requirement, so a step whose stated version
-is not installed does not run.
+A stale step that is not frozen reruns, whatever changed, and prints which inputs changed. A version stated by a step is a requirement. The step does not run if that version is not installed.
 
-Freezing adds a protection and unfreezing takes one away, so they are not symmetric.
-`sloop freeze PAGE` freezes every step of a page that is wholly current, and refuses one that is
-not. `sloop unfreeze`, `sloop accept` and `sloop make --force` on a frozen step each ask for
-`yes` at a terminal and refuse without one, so an agent can freeze a page but cannot undo it.
-The lock records which steps are frozen, so a `frozen: true` deleted from a page by hand is
-refused by `sloop make` and reported by `sloop status`.
+Only a frozen step marks a result as decided. Changes are refused when they affect an input a frozen step read, or an output of a frozen step that another step reads. Use `sloop accept PAGE WHAT -m "why"` to record in the lock that a change was meant, with your reason.
 
-`sloop freeze PAGE STEP` records a step as it stands without running it, for work done
-outside sloop, such as an analysis started on a cluster. Nothing checks what a frozen step
-ran, so it is only for what cannot be cheaply rerun.
+Freezing adds protection and unfreezing removes it. `sloop freeze PAGE` freezes every step of a wholly current page and refuses a page that is not wholly current. `sloop unfreeze`, `sloop accept` and `sloop make --force` on a frozen step each require you to type `yes` at a terminal. They refuse without it, so an agent can freeze a page but cannot undo the protection.
 
-A check is a command of a line or two with the answer the page expects. Its definition is
-hashed into the lock, so an edited check shows in the diff.
+The lock records which steps are frozen. If you delete `frozen: true` from the page by hand, `sloop make` refuses the change and `sloop status` reports it.
 
-Hashes are remembered by file size and modification time in `.sloop/`, which should be
-ignored by git, so a directory of ten thousand logs is not read again on every status.
-`sloop status --rehash` reads everything, and freezing and building always do.
+`sloop freeze PAGE STEP` records a step as it stands without running it. Use this only for work that cannot be cheaply rerun, such as an analysis started on a cluster. Nothing checks what a frozen step ran.
+
+A check is a command of a line or two with the answer the page expects. Its definition is hashed into the lock, so an edited check appears in the diff.
+
+Hashes are remembered by file size and modification time in `.sloop/`. Add this directory to your git ignore rules. This avoids rereading a directory of ten thousand logs on every status check. `sloop status --rehash` reads everything. Freezing and building always read everything.
 
 ### Unfinished work
 
-A page that reads the output of a step with no record, or whose quick step ran on
-uncommitted code, is provisional: the lock says why, and the page carries a banner, including
-in a shared copy. Nothing clears that by hand. A frozen step refuses to run on uncommitted
-code at all.
+A page is provisional if it reads the output of a step with no record, or if its quick step ran on uncommitted code. The lock records why, and the page carries a banner, including in a shared copy. You cannot clear this by hand. A frozen step refuses to run on uncommitted code.
 
-Results can be watched as they come in. With an analysis running, `sloop make PAGE` skips it
-and reruns the summary against the logs that exist.
+You can watch results as they come in. While an analysis is running, `sloop make PAGE` skips it and reruns the summary against the logs that exist.
 
 ### Writing
 
@@ -265,19 +218,81 @@ and reruns the summary against the logs that exist.
 | `==text==` | a highlight |
 | `[text]{.name}` | a span with that class, for a table cell that wants its own style; `hi` and `lo` are defined |
 
-A `{{key}}` with no value, an embedded file that is missing, a reference to a label that is
-not there, a citation that is not in the `.bib` file and math the converter does not know
-all stop the build. A table's emphasis belongs in the data: the script that knows which
-number is notable writes `**0.555**` or `==+2.69==` in the cell, and it follows the numbers
-when they are regenerated.
+The build stops for a `{{key}}` with no value, a missing embedded file, a reference to a missing label, a citation absent from the `.bib` file, or math the converter does not know.
 
-An SVG's colours that are listed under `figure_colors` are swapped for the stylesheet
-variables they stand for, so the figure follows the page between light and dark. One with
-none of them, and any bitmap, is inverted in the dark instead.
+Put a table's emphasis in the data. The script that knows which number is notable should write `**0.555**` or `==+2.69==` in the cell. The emphasis then follows the numbers when they are regenerated.
 
-The spelling is Pandoc's wherever there was a choice, so a page can be handed to it for a
-manuscript. `sloop cite 10.1371/journal.pcbi.1007999` asks doi.org for the entry and appends
-it to the `.bib` file as supplied.
+SVG colours listed under `figure_colors` are replaced with the stylesheet variables they stand for. This makes the figure follow the page between light and dark. An SVG with none of those colours is inverted in the dark instead. Bitmaps are also inverted.
 
-A build reads only committed files: the page, its lock, and the outputs beside it. It checks
-that those outputs are the ones the lock records, and needs no checkout, no tool and no data.
+The spelling follows Pandoc wherever there was a choice, so you can hand a page to Pandoc for a manuscript. `sloop cite 10.1371/journal.pcbi.1007999` asks doi.org for the entry and appends it to the `.bib` file as supplied.
+
+A build reads only committed files: the page, its lock and the outputs beside it. It checks that the outputs match the lock. It needs no checkout, tool or data.
+
+### Dates
+
+The index lists when each page was created and when it last changed. The created time is the earliest recorded time, either the page's first commit or the oldest of its files. If the header's `date:` is earlier still, that date is used without a time. A notebook put under git late therefore keeps its pages' own dates.
+
+The updated time is the page's last commit, or its newest file before it is committed.
+
+### Scratch
+
+Every notebook has a scratch page at `pages/scratch/page.md`, with `scratch: true` in its header. The first command you run creates it if it is absent. Deleting it brings a fresh one back on the next command.
+
+Use the scratch page for notes, arithmetic and dead ends until they are worth a page. You can reach it from the square in the rail. It has no index row, tags or date counts.
+
+## Serving
+
+`sloop serve` builds the site, serves it on localhost at `serve.port`, and rebuilds when a page changes. The default port is 8099. The browser reloads when the page changes. A failed build never replaces the served copy.
+
+With `serve.edit: true`, each page has an editor. A save is built in a scratch directory first and rolled back if the build fails. The editor answers only on localhost.
+
+Every response has a noindex header, and every page has a noindex meta tag. Neither is access control.
+
+You can serve a notebook under a path prefix behind a proxy. For example, use `tailscale serve --set-path /notebook http://127.0.0.1:8099`. sloop emits relative links, so the site works under any prefix. A page reached without its trailing slash adds the slash before anything loads.
+
+### The sidebar
+
+Every page has a rail on the left that opens a sidebar. Press ctrl+` to toggle it. The sidebar has notebook and library views.
+
+The notebook view is a terminal. Set `serve.panes` to a list of `{url, label}` entries. The entry labelled `terminal` is loaded in a frame in the sidebar. For example, `panes: [{url: /term/, label: terminal}]` uses a ttyd served beside the notebook at `/term/`. Without a terminal, the library is the only view.
+
+### The library
+
+`library/` holds one PDF per paper at `library/pdf/<key>.pdf`. The key is the citation key in the `.bib` file. Each paper's notes are stored in `library/<key>.json`.
+
+The library view lists the papers. A paper's page shows its PDF with its notes beside it. A second PDF whose name starts with the paper's key and an underscore is treated as another file of that paper, such as a supplement.
+
+With `sloop serve` and `edit: true`, you can enter a DOI in the library view or drop a PDF onto it. A DOI is cited into the `.bib` file in the same way as `sloop cite`. A dropped PDF is read by Claude through the `claude` command line tool, which must be installed. Its notes are written to `library/<key>.json`.
+
+A notes file contains `one_line`, `summary`, `points`, `connection` and `quotes`, along with the paper's details. Use `library/PROMPT.md` to state the project and what the notebook cares about. The notes can then say what a paper means for this notebook rather than just that it is relevant.
+
+You can name fields of your own in `PROMPT.md`. The notes then carry those fields, and the paper's page shows them under their names.
+
+If a paper cannot be fetched automatically, add it by hand. Put the PDF in `library/pdf/` under its citation key.
+
+## Sharing
+
+`sloop share PAGE` exports a page as one file into `share/`, under a token no one can guess. Add `share/` to your git ignore rules. Anyone holding the link can read the page.
+
+`sloop share --serve` serves only shared pages at `/share/<token>/`, with no listing and no index. It uses `share.port`, which defaults to 8106. The public address is read from the Tailscale Funnel that proxies that port, or you can set it with `share.url`.
+
+Sharing an already shared page refreshes it at the same link. `sloop unshare` removes its directory to revoke the link. Run `sloop share` without a page to list what is shared.
+
+## Static builds
+
+Use `sloop build --static` for any deployment that is not `sloop serve`. It makes a site for a host with no sloop behind it, such as App Engine, S3 or GitHub Pages.
+
+A static build leaves out the terminal, the library's DOI and PDF import, and requests to `sloop serve` for the editor and live reload.
+
+`sloop build` does not copy the library's PDFs into the site. If a deployment should include them, copy `library/pdf/` into `<out>/library/pdf/` yourself.
+
+## Deploying
+
+`sloop pack` writes a zipapp carrying everything it imports. The archive is under 1 MB and runs on any python3 with nothing installed and nothing to resolve:
+
+    sloop pack sloop.pyz
+    python3 sloop.pyz build --out _site
+
+Commit the archive beside the pages. A GitHub Actions job is then one line with no setup step, since every runner image already ships python3. Use `--static` when building for that deployment.
+
+The same archive works on Netlify, Cloudflare Pages, a container or a cluster node. Packing drops the compiled YAML accelerator and uses the pure-Python parser instead, so the archive is platform independent.
