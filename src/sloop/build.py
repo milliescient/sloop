@@ -935,7 +935,7 @@ STYLE = r"""
     writing-mode:vertical-rl; padding:7px 0; }
   #rail .navbtn[aria-checked="true"] { color:#ede7dc; }
   /* scratch belongs to the notebook, so it sits under it and is not one of the two views */
-  #rail .scratchbtn { width:auto; padding:3px 0 7px; color:#4f4a40; }
+  #rail .scratchbtn { width:auto; padding:3px 0 7px; color:var(--muted); }
   #rail .scratchbtn[aria-pressed="true"] { color:var(--accent, #d4714c); }
   #rail .scratchbtn svg { display:block; }
 
@@ -1290,8 +1290,17 @@ APP = r"""(function () {
   /* ---- the mount ----
      Every page records how deep it sits: data-root is ./ or ../ or ../../. Resolved against
      the page's own url, that gives the mount root as one absolute path, so nothing below has
-     to know how deep the current page is or where the site is served. */
-  var MOUNT = new URL(body.getAttribute("data-root") || "./", location.href).pathname;
+     to know how deep the current page is or where the site is served.
+
+     The url has to name a directory before a relative root is resolved against it. A notebook
+     served under a path prefix can be reached without the trailing slash, and a proxy that
+     strips the prefix has nothing to redirect, so the request arrives as the index while the
+     browser sits on a url whose last segment reads as a file. Resolving ./ against that gives
+     the parent: the mount comes out as the server root and every link drops the prefix. So
+     name the directory first, by the same test isPage uses for a file. */
+  var dir = location.pathname;
+  if (!/\/$/.test(dir) && !/\.[a-z0-9]{1,5}$/i.test(dir)) dir += "/";
+  var MOUNT = new URL(body.getAttribute("data-root") || "./", location.origin + dir).pathname;
   if (!/\/$/.test(MOUNT)) MOUNT += "/";
 
   function here() {
