@@ -509,6 +509,16 @@ def stub_main(key, doi):
             '</div>')
 
 
+# Every page is a directory, so every relative link in it assumes a url ending in a slash.
+# A notebook mounted under a prefix can be reached without one, and a proxy that strips the
+# prefix hands the server "/" either way, so only the browser can tell. Without the slash
+# ./assets/style.css resolves one level up, which on a shared host is another notebook's
+# stylesheet. So before anything relative loads, put the slash back.
+SLASH = ('<script>(function(){var p=location.pathname;'
+         'if(!/\\/$/.test(p)&&!/\\.[a-z0-9]{1,5}$/i.test(p))'
+         'location.replace(p+"/"+location.search+location.hash);})();</script>\n')
+
+
 def shell(depth, title, main, shared):
     """One page of the site.
 
@@ -530,7 +540,8 @@ def shell(depth, title, main, shared):
             .replace("@@MAIN@@", main))
     page = page.replace("@@ROOT@@", root)       # last, so the pieces above resolve too
     return ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            + SLASH
+            + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             + HEAD
             + f"<title>{html.escape(title)}</title>\n"
             + f'<link rel="stylesheet" href="{root}assets/style.css">\n</head>\n'
