@@ -158,6 +158,8 @@ def main(argv=None):
 
     b = sub.add_parser("build", parents=[common], help="render the notebook")
     b.add_argument("--out", help="write the site here instead of the configured out")
+    b.add_argument("--static", action="store_true",
+                   help="for a static host: leave out the terminal and the library import")
     # there are no drafts: a page reaches anyone else only when shared. Kept so a service
     # that still passes it starts.
     b.add_argument("--no-drafts", action="store_true", help=argparse.SUPPRESS)
@@ -246,7 +248,7 @@ def main(argv=None):
         out = Path(a.out).expanduser().resolve() if a.out else None
         if a.no_drafts:
             print("  --no-drafts does nothing: there are no drafts, and a page is published by sharing it")
-        builder.build(out)
+        builder.build(out, static=a.static)
         return
     if a.cmd == "share":
         if a.serve:

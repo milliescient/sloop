@@ -54,6 +54,9 @@ from . import render as R
 ROOT = PAGES = SITE = BIB = None
 SOURCES, PALETTE = [], {}
 CONF, TITLE, REPO, BRANCH = {}, "notebook", "", "main"
+# a site for a static host: nothing that needs sloop serve behind it, so no terminal
+# and no library import. Set by build(static=True) for the one build it asks for.
+STATIC = False
 _share_url = None
 
 
@@ -423,12 +426,14 @@ def library_markup():
           ' stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
           '<path d="M2.2 10v1.8h9.6V10" stroke="currentColor" stroke-width="1.3"'
           ' stroke-linecap="round"/></svg>')
-    lead = ('<form class="libadd" id="libadd" onsubmit="return false">'
+    form = ('' if STATIC else
+            '<form class="libadd" id="libadd" onsubmit="return false">'
             '<input id="libdoi" type="text" placeholder="paste a doi" autocomplete="off">'
             '<button id="libdoibtn" type="button">cite</button>'
             f'<label class="libdrop" for="libpdf" title="add a pdf">{up}</label>'
             '<input id="libpdf" type="file" accept="application/pdf" multiple hidden>'
-            '</form><p class="libsay" id="libsay"></p>'
+            '</form>')
+    lead = (form + '<p class="libsay" id="libsay"></p>'
             f'<p class="libcount">{n_pdf} papers of {len(refs)} citations.</p>')
     return {
         "pane": f'<div id="liblist">{lead}{rows}</div>',
@@ -521,7 +526,7 @@ def shell(depth, title, main, shared):
             + HEAD
             + f"<title>{html.escape(title)}</title>\n"
             + f'<link rel="stylesheet" href="{root}assets/style.css">\n</head>\n'
-            + f'<body data-root="{root}">\n'
+            + f'<body data-root="{root}"{' data-static="1"' if STATIC else ''}>\n'
             + page
             + f'<!--chrome--><script src="{root}assets/app.js"></script><!--/chrome-->\n</body>\n</html>\n')
 
@@ -686,7 +691,9 @@ def emit_site(pages, site):
     print(f"  {shown}/  {len(written)} pages, {total // 1024} KB")
 
 
-def build(site=None):
+def build(site=None, static=False):
+    global STATIC
+    STATIC = static
     files = sorted(p for d in sorted(PAGES.iterdir()) if d.is_dir()
                    for p in (d / "page.md", d / "page.html") if p.exists())
     entries = [parse(p) for p in files]
@@ -733,7 +740,7 @@ def build(site=None):
         for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
     panes = [r for r in ((CONF.get("serve") or {}).get("panes") or []) if r.get("url")]
-    term = next((r for r in panes if r.get("label") == "terminal"), None)
+    term = None if STATIC else next((r for r in panes if r.get("label") == "terminal"), None)
     LIB = library_markup()
     rail = (
         '<div id="rail">'
@@ -742,8 +749,9 @@ def build(site=None):
         '<path d="M3.5 1.5 L8 6 L3.5 10.5" stroke="currentColor" stroke-width="1.6"'
         ' stroke-linecap="round" stroke-linejoin="round"/></svg></button>'
         + '<div id="nav" role="radiogroup" aria-label="pane">'
-        '<button class="navbtn" id="navnotebook" role="radio" aria-checked="true"'
-        ' data-view="notebook" title="notebook">notebook</button>'
+        # the notebook view is the terminal, so without one the library is the only view
+        + ('<button class="navbtn" id="navnotebook" role="radio" aria-checked="true"'
+           ' data-view="notebook" title="notebook">notebook</button>' if term else "")
         + "".join(
             f'<button class="scratchbtn" data-slug="{html.escape(e["slug"])}"'
             f' aria-pressed="false" title="{html.escape(e["title"])}">'
@@ -1488,7 +1496,9 @@ APP = r"""(function () {
   });
 
   /* ---- the editor and the importer exist only where the server answers edit/ ---- */
-  var editOn = fetch(MOUNT + "edit/", { cache: "no-store" })
+  /* a static build has no server behind it to ask */
+  var STATIC = body.getAttribute("data-static") === "1";
+  var editOn = STATIC ? Promise.resolve(false) : fetch(MOUNT + "edit/", { cache: "no-store" })
     .then(function (r) { return r.ok; }).catch(function () { return false; });
 
   (function () {
@@ -1635,6 +1645,7 @@ APP = r"""(function () {
       refresh();
     }
     setInterval(function () { if (held && !editing()) { held = false; refresh(); } }, 500);
+    if (STATIC) return;
     try { es = new EventSource(MOUNT + "live"); } catch (e) { return; }
     es.onopen = function () { fails = 0; };
     es.onmessage = function (ev) { arrived(ev.data); };
@@ -1729,6 +1740,7 @@ APP = r"""(function () {
       });
     }
     function setLib(open) {
+      if (!open && !TERM) return;           /* no terminal: the library is the only view */
       body.classList.toggle("libview", open);
       set("sloop.libview", open ? "1" : "0");
       if (open) { setOpen(true, false); primeBox(); }
@@ -1821,7 +1833,7 @@ APP = r"""(function () {
     document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); });
 
     if (get("sloop.paneopen") === "1") setOpen(true, false);
-    if (get("sloop.libview") === "1") body.classList.add("libview");
+    if (get("sloop.libview") === "1" || !TERM) body.classList.add("libview");
     hooks.push(lift);
   })();
 
