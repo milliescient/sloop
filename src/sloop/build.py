@@ -701,9 +701,14 @@ def build(site=None):
         first, last = activity.get(e["slug"]) or ("", "")
         e["stamp"] = last or written(page_dir) or e["date"]
         e["updated"] = stamp_text(e["stamp"])
-        e["born"] = first or written(page_dir, first=True) or e["date"]
-        # a page can be written for weeks before its first commit, and a notebook put under
-        # git late commits every page at once, so the date the page states wins when earlier
+        # A page can be written for weeks before its first commit, and a notebook put under
+        # git late commits every page at once, so the commit is only one witness. The oldest
+        # of the page's files is another, and both carry a time. In a fresh clone the files
+        # are as new as the clone, so the earlier of the two is the commit and nothing changes.
+        # The date the page states wins only when it is earlier still, and it has no time.
+        e["born"] = min(filter(None, (first, written(page_dir, first=True))), default="",
+                         key=datetime.fromisoformat) \
+            or e["date"]
         if e["date"][:10] < e["born"][:10]:
             e["born"] = e["date"]
         e["created"] = stamp_text(e["born"])
