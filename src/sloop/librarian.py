@@ -31,7 +31,9 @@ def claude_bin():
     return "claude"
 CHARS = 60000           # the front of a paper carries almost everything an entry needs
 
-SCHEMA = """Return ONLY a JSON object, no prose around it, with exactly these keys:
+SCHEMA = """Return ONLY a JSON object, no prose around it. It has these keys, and also one
+string-valued key for each field the project context above names as specific to this
+notebook, under exactly that name:
   key          the citation key you were given
   authors      "Surname, A., Surname, B." or "Surname, A. et al." past six
   year         four digits as a string
@@ -42,7 +44,6 @@ SCHEMA = """Return ONLY a JSON object, no prose around it, with exactly these ke
   one_line     one sentence: what this paper is, for someone deciding whether to read it
   summary      one paragraph of what it actually does. No throat-clearing.
   points       3 to 8 strings, the specific claims, methods or numbers worth having
-  age_uncertainty  how this paper treats the age of a fossil occurrence, or "" if it does not
   connection   2 to 5 strings: how it bears on THIS project, each starting with a verb
   quotes       0 to 3 objects {"text": "...", "where": "section or page"}, verbatim only
 Write plainly. No em dashes, no semicolons. Do not invent a number, a quote or a DOI: leave a

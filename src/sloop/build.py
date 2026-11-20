@@ -328,6 +328,10 @@ def sidebar_sources(rows):
 
 
 
+CORE_NOTE_KEYS = {"key", "authors", "year", "title", "venue", "doi", "version", "one_line",
+                  "summary", "points", "connection", "quotes", "status", "error", "raw"}
+
+
 def library_markup():
     """The reading library.
 
@@ -362,8 +366,12 @@ def library_markup():
         if pts:
             out += "<h4>Points</h4><ul>" + "".join(
                 f"<li>{html.escape(str(x))}</li>" for x in pts) + "</ul>"
-        if n.get("age_uncertainty"):
-            out += f'<h4>Age uncertainty</h4><p>{html.escape(str(n["age_uncertainty"]))}</p>'
+        # a notebook names its own fields in library/PROMPT.md, so any key sloop does not
+        # know is one of those, shown under its own name in the order the entry gives
+        for k, v in n.items():
+            if k not in CORE_NOTE_KEYS and isinstance(v, str) and v.strip():
+                out += (f'<h4>{html.escape(k.replace("_", " ").capitalize())}</h4>'
+                        f'<p>{html.escape(v)}</p>')
         con = n.get("connection") or []
         if con:
             out += "<h4>Connection</h4><ul>" + "".join(
