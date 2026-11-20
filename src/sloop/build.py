@@ -702,6 +702,10 @@ def build(site=None):
         e["stamp"] = last or written(page_dir) or e["date"]
         e["updated"] = stamp_text(e["stamp"])
         e["born"] = first or written(page_dir, first=True) or e["date"]
+        # a page can be written for weeks before its first commit, and a notebook put under
+        # git late commits every page at once, so the date the page states wins when earlier
+        if e["date"][:10] < e["born"][:10]:
+            e["born"] = e["date"]
         e["created"] = stamp_text(e["born"])
         e["why"] = L.gate(page_dir)
         e["prov"] = provenance(page_dir)
