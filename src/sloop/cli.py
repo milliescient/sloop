@@ -238,6 +238,9 @@ def main(argv=None):
 
     root, conf = paths.load(getattr(a, "dir", None))
     builder.init(root, conf)
+    made = scaffold.ensure(conf["pages"])
+    if made:
+        print(f"  made {made.parent.name}/, this notebook's scratch page")
 
     if a.cmd == "build":
         out = Path(a.out).expanduser().resolve() if a.out else None

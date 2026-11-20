@@ -35,6 +35,31 @@ Body, in Markdown. `{{{{key}}}}` is a value a step wrote to values.tsv, `$x^2$` 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
+SCRATCH_TEMPLATE = """title: Scratch
+scratch: true
+date: {date}
+---
+Working space. Reachable from the square in the rail and listed nowhere: no index row, no
+tags, no date counts. Notes, arithmetic and dead ends live here until they are worth a page.
+"""
+
+
+def ensure(pages):
+    """Every notebook has a scratch page, so the rail's square is always there.
+
+    The rail renders one button per page that declares `scratch: true`, so the feature is
+    made general by the page existing rather than by special-casing the rail. Written once
+    and never rewritten: after that the file is the author's, and deleting it brings a fresh
+    one back on the next command.
+    """
+    f = Path(pages) / "scratch" / "page.md"
+    if f.exists():
+        return None
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(SCRATCH_TEMPLATE.format(date=datetime.date.today().isoformat()))
+    return f
+
+
 def new(pages, name, words=(), dependencies=None):
     if not name:
         raise SystemExit('usage: sloop new <name> ["Title of the finding"]')
